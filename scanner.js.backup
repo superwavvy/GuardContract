@@ -1,0 +1,182 @@
+var callerAnalyzer = require("./caller-analyzer.js");
+var applyCallerAnalysis = callerAnalyzer.applyCallerAnalysis;
+var etherscan = require("./etherscan.js");
+var fetchContract = etherscan.fetchContract;
+var detectChain = etherscan.detectChain;
+
+var solPatterns = require("./sol-patterns.js");
+var runPatterns = solPatterns.runPatterns;
+
+var solVersion = require("./sol-version.js");
+var parseSolidityVersion = solVersion.parseSolidityVersion;
+var versionTier = solVersion.versionTier;
+
+var analyzer = require("./analyzer.js");
+var analyzeChunk = analyzer.analyzeChunk;
+var classifyScope = analyzer.classifyScope;
+
+var guardscanPatch = require("./guardscan-patch.js");
+var applyVerification = guardscanPatch.applyVerification;
+
+var scope = require("./scope.js");
+var getScope = scope.getScope;
+
+var cache = require("./cache.js");
+
+async function scanContract(address, chainArg) {
+  var chain = chainArg || (await detectChain(address));
+  if (!chain) {
+    return { ok: false, reason: "Contract not found on any supported chain." };
+  }
+
+  var cached = cache.get(address, chain);
+  if (cached) {
+    console.log("Cache hit: " + address + " on " + chain);
+    var cachedReport = Object.assign({}, cached);
+    cachedReport.cached = true;
+    return cachedReport;
+  }
+
+  console.log("\nScanning " + address + " on " + chain);
+
+  var contract = await fetchContract(address, chain);
+  if (!contract.ok) return contract;
+
+  console.log(contract.contractName + " - " + contract.files.length + " file(s)");
+
+  var primarySource = contract.primaryFile.content;
+  var version = parseSolidityVersion(primarySource);
+  var tier = versionTier(version);
+  console.log("Pragma: " + (version.raw || "?") + " -> tier " + tier);
+
+  var allFindings = [];
+
+  for (var i = 0; i < contract.files.length; i++) {
+    var file = contract.files[i];
+    var head = file.content.slice(0, 300);
+    if (/^\s*(pragma[^;]*;\s*)?(interface|library)\s+\w+/m.test(head)) continue;
+
+    var patterns = runPatterns(file.content, file.path, tier);
+    if (patterns.length > 0) {
+      console.log("  pattern: " + file.path + " -> " + patterns.length + " findings");
+    }
+
+    var numbered = file.content.split("\n").map(function(line, idx) {
+      return (idx + 1) + ": " + line;
+    }).join("\n");
+
+    var llmFindings = [];
+    try {
+      llmFindings = await analyzeChunk(numbered, 1, file.path, contract, chain, tier);
+    } catch (e) {
+      console.log("  LLM failed on " + file.path + ": " + e.message);
+    }
+
+    var merged = mergeAndDedupe(patterns, llmFindings);
+    var verified = applyVerification(merged, file.content, { verbose: false });
+    var classified = applyCallerAnalysis(verified, file.content);
+    classified = classified.filter(function(f) { return f.severity !== "LOW"; });
+    allFindings = allFindings.concat(classified);
+  }
+
+  var scopeLabeled = allFindings;
+  var currentScope = getScope();
+  if (currentScope && allFindings.length > 0) {
+    try {
+      scopeLabeled = await classifyScope(allFindings, currentScope);
+    } catch (e) {
+      console.log("  Scope classification failed: " + e.message);
+    }
+  }
+
+  var report = {
+    ok: true,
+    address: address,
+    chain: chain,
+    contractName: contract.contractName,
+    compilerVersion: contract.compilerVersion,
+    solidityRange: version.raw,
+    tier: tier,
+    filesAnalyzed: contract.files.length,
+    findings: scopeLabeled,
+    scoped: !!currentScope
+  };
+
+  cache.set(address, chain, report);
+  return report;
+}
+
+function familyOf(type) {
+  var t = String(type || "").toLowerCase();
+  if (t.indexOf("reentrancy") !== -1) return "reentrancy";
+  if (t.indexOf("legacy .call.value") !== -1) return "reentrancy";
+  if (t.indexOf("unchecked low-level call") !== -1) return "unchecked-call";
+  if (t.indexOf("unchecked erc20 transfer") !== -1) return "unchecked-call";
+  if (t.indexOf("integer overflow") !== -1) return "arithmetic";
+  if (t.indexOf("overflow") !== -1) return "arithmetic";
+  if (t.indexOf("underflow") !== -1) return "arithmetic";
+  if (t.indexOf("unchecked external call") !== -1) return "unchecked-call";
+  if (t.indexOf("unchecked low-level call") !== -1) return "unchecked-call";
+  if (t.indexOf("integer underflow") !== -1) return "arithmetic";
+  if (t.indexOf("unbounded loop") !== -1) return "unbounded-loop";
+  if (t.indexOf("denial of service") !== -1) return "unbounded-loop";
+  if (t.indexOf("dos") !== -1) return "unbounded-loop";
+  return t;
+}
+
+function mergeAndDedupe(patterns, llm) {
+  var map = {};
+
+  for (var i = 0; i < patterns.length; i++) {
+    var p = patterns[i];
+    var fam = familyOf(p.type);
+    var anchor = p.file + "::" + p.line + "::" + fam;
+    if (!map[anchor]) map[anchor] = p;
+  }
+
+  for (var j = 0; j < llm.length; j++) {
+    var l = llm[j];
+    var _lt = String(l.type || "").toLowerCase();
+    var _isSymptom = _lt.indexOf("access control") !== -1 || _lt.indexOf("authorization") !== -1 || _lt.indexOf("centralization") !== -1;
+    var _hasStrongPattern = patterns.some(function(p) { return p.severity === "CRITICAL" || p.severity === "HIGH"; });
+    if (_isSymptom && _hasStrongPattern) continue;
+    var famL = familyOf(l.type);
+    var anchorL = l.file + "::" + l.line + "::" + famL;
+    if (!map[anchorL]) {
+      var copy = Object.assign({}, l);
+      copy.source = "llm";
+      map[anchorL] = copy;
+    } else {
+      map[anchorL].source = "both";
+      map[anchorL].corroborated = true;
+    }
+  }
+
+  var all = Object.keys(map).map(function(k) { return map[k]; });
+
+  var sevOrder = { CRITICAL: 0, HIGH: 1, MEDIUM: 2, LOW: 3 };
+  all.sort(function(a, b) {
+    var sa = sevOrder[a.severity] !== undefined ? sevOrder[a.severity] : 9;
+    var sb = sevOrder[b.severity] !== undefined ? sevOrder[b.severity] : 9;
+    if (sa !== sb) return sa - sb;
+    if (a.file !== b.file) return a.file.localeCompare(b.file);
+    return a.line - b.line;
+  });
+
+  var familyCount = {};
+  var final = [];
+  for (var k = 0; k < all.length; k++) {
+    var f = all[k];
+    var famF = familyOf(f.type);
+    familyCount[famF] = (familyCount[famF] || 0) + 1;
+    if (familyCount[famF] <= 3) {
+      final.push(f);
+    }
+  }
+
+  return final;
+}
+
+module.exports = {
+  scanContract: scanContract
+};

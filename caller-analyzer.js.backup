@@ -1,0 +1,161 @@
+// Caller classification — determine if a function is owner-gated.
+// Used to demote findings in privileged functions (owner can't attack itself).
+
+function lineNumberAt(source, index) {
+  return source.substring(0, index).split("\n").length;
+}
+
+function findFunctionStart(lines, fromLine) {
+  var i = fromLine;
+  while (i > 0 && !/function\s+\w+\s*\(/.test(lines[i])) i--;
+  return i;
+}
+
+function findFunctionEnd(lines, fromLine) {
+  var depth = 0;
+  var started = false;
+  for (var i = fromLine; i < lines.length; i++) {
+    var line = lines[i];
+    for (var j = 0; j < line.length; j++) {
+      var ch = line[j];
+      if (ch === "{") { depth++; started = true; }
+      else if (ch === "}") { depth--; }
+    }
+    if (started && depth === 0) return i + 1;
+  }
+  return lines.length;
+}
+
+// Detect if a function has an owner/modifier gate.
+// Patterns checked (in priority order):
+//   1. `onlyOwner` modifier in signature
+//   2. `require(msg.sender == owner)` in body
+//   3. `require(owner == msg.sender)` in body
+//   4. `require(msg.sender == <privilegedVar>)` in body
+//   5. Custom modifier that likely gates access
+function classifyCaller(fnHeader, fnBody) {
+  var result = {
+    gated: false,
+    reason: null,
+    signature: fnHeader.trim().slice(0, 200)
+  };
+
+  // Build full signature: from "function" keyword up to the opening "{"
+  var sigText = fnHeader;
+  if (fnBody) {
+    // Find the opening brace in the body text and include the pre-brace portion
+    var braceIdx = fnBody.indexOf("{");
+    if (braceIdx > 0) {
+      sigText = fnHeader + " " + fnBody.slice(0, braceIdx);
+    }
+  }
+
+  // 1. Signature-level modifiers
+  if (/\bonlyOwner\b/.test(sigText)) {
+    result.gated = true;
+    result.reason = "onlyOwner modifier";
+    return result;
+  }
+  var modMatch = sigText.match(/\bonly([A-Z]\w*)\b/);
+  if (modMatch) {
+    result.gated = true;
+    result.reason = "custom admin modifier";
+    return result;
+  }
+
+  // 2. Body-level owner checks — first 600 chars
+  var head = fnBody.slice(0, 600);
+
+  if (/require\s*\(\s*msg\.sender\s*==\s*owner\s*\)/i.test(head)) {
+    result.gated = true;
+    result.reason = "require(msg.sender == owner)";
+    return result;
+  }
+  if (/require\s*\(\s*owner\s*==\s*msg\.sender\s*\)/i.test(head)) {
+    result.gated = true;
+    result.reason = "require(owner == msg.sender)";
+    return result;
+  }
+  if (/require\s*\(\s*msg\.sender\s*==\s*(admin|governance|manager|controller)\s*\)/i.test(head)) {
+    result.gated = true;
+    result.reason = "require(msg.sender == privileged role)";
+    return result;
+  }
+
+  // 3. Check for external calls
+  var hasExternalCall = /\.(call|delegatecall|transfer|send)\s*(?:\{[^}]*\})?\s*\(/.test(fnBody);
+
+  // 4. Internal/private with external calls = reachable via public caller
+  if (/\b(private|internal)\b/.test(sigText)) {
+    if (hasExternalCall) {
+      result.gated = false;
+      result.reason = "internal but makes external calls — reachable via public caller";
+      return result;
+    }
+    result.gated = true;
+    result.reason = "private/internal, no external calls";
+    return result;
+  }
+
+  // 5. External/public with no gate
+  result.gated = false;
+  result.reason = "external/public, no owner gate detected";
+  return result;
+}
+
+// Apply caller classification to a finding.
+// Returns a new finding with adjusted severity + caller metadata.
+function adjustFindingForCaller(finding, source) {
+  if (!source || !finding.line) return finding;
+
+  var lines = source.split("\n");
+  var lineIdx = finding.line - 1;
+
+  if (lineIdx < 0 || lineIdx >= lines.length) return finding;
+
+  var fnStart = findFunctionStart(lines, lineIdx);
+  if (fnStart === lineIdx && !/function\s+\w+\s*\(/.test(lines[lineIdx])) {
+    return finding;
+  }
+
+  var fnEnd = findFunctionEnd(lines, fnStart);
+  var fnHeader = lines[fnStart];
+  var fnBody = lines.slice(fnStart, fnEnd).join("\n");
+
+  var classification = classifyCaller(fnHeader, fnBody);
+
+  var adjusted = Object.assign({}, finding);
+  adjusted.caller = {
+    gated: classification.gated,
+    reason: classification.reason,
+    function: classification.signature
+  };
+
+  if (classification.gated) {
+    // Demote one tier
+    var demote = { CRITICAL: "HIGH", HIGH: "MEDIUM", MEDIUM: "LOW", LOW: "LOW" };
+    var original = adjusted.severity;
+    adjusted.severity = demote[original] || original;
+    adjusted.demoted_reason = "Owner-gated function: " + classification.reason;
+    adjusted.original_severity = original;
+  }
+
+  return adjusted;
+}
+
+// Apply to a full findings array
+function applyCallerAnalysis(findings, source) {
+  if (!source) return findings;
+  var out = [];
+  for (var i = 0; i < findings.length; i++) {
+    out.push(adjustFindingForCaller(findings[i], source));
+  }
+  return out;
+}
+
+module.exports = {
+  applyCallerAnalysis: applyCallerAnalysis,
+  classifyCaller: classifyCaller,
+  findFunctionStart: findFunctionStart,
+  findFunctionEnd: findFunctionEnd
+};
