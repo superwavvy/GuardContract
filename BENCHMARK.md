@@ -1,6 +1,6 @@
 # GuardContract Benchmark
 
-Ground truth: **SmartBugs Curated** — 143 annotated contracts, 208 labelled vulnerabilities, 10 categories. Published by the SmartBugs team; not fitted to GuardContract rules.
+Ground truth: **SmartBugs Curated** — 143 annotated contracts, 207 labelled vulnerabilities, 10 categories. Published by the SmartBugs team; not fitted to GuardContract rules.
 
 ## Patterns-only (deterministic rules, no LLM)
 
