@@ -185,6 +185,16 @@ function escapeMd(str) {
 
 // ==================== SHORT REPORT ====================
 
+function llmStatusLine(s) {
+  if (!s) return "untracked";
+  const parts = [];
+  if (s.ok) parts.push("ok:" + s.ok);
+  if (s.skipped_secondary) parts.push("skip:" + s.skipped_secondary);
+  if (s.skipped_oversized) parts.push("⚠️ oversized:" + s.skipped_oversized);
+  if (s.filtered) parts.push("filtered:" + s.filtered);
+  if (s.failed) parts.push("❌ failed:" + s.failed);
+  return parts.length ? parts.join(" · ") : "none";
+}
 function formatReport(r) {
   if (!r.ok) return "❌ *Scan failed*\n\n" + r.reason;
 
@@ -205,12 +215,14 @@ function formatReport(r) {
   out += "*⚙️  Compiler*    `" + r.compilerVersion + "`\n";
   out += "*📌 Pragma*      `" + (r.solidityRange || "?") + "`\n";
   out += "*🔧 Ruleset*     " + (TIER_LABELS[r.tier] || r.tier) + "\n\n";
+  out += `🤖 *LLM*          ${llmStatusLine(r.llmStatus)}\n\n`;
 
   out += DIV + "\n";
 
   if (totalFindings === 0) {
     out += "*🔍 FINDINGS — CLEAN*\n";
     out += DIV + "\n\n";
+    if (r.llmStatus && r.llmStatus.failed > 0) out += "⚠️ LLM layer partially failed — findings may be incomplete.\n";
     out += "✅ No pattern matches or LLM findings.\n";
     out += "_Represents both layers, not a full audit._\n";
   } else {

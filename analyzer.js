@@ -17,7 +17,10 @@ const CWE_MAP = {
   "Timestamp Dependence": "CWE-330",
   "Uninitialized Storage": "CWE-824",
   "Unchecked External Call": "CWE-252",
-  "Storage Collision": "CWE-787"
+  "Storage Collision": "CWE-787",
+  "Share Accounting": "CWE-682",
+  "Pool-Balance Logic Error": "CWE-682",
+  "Logic Error": "CWE-682",
 };
 
 function buildPrompt(contractName, compilerVersion, chain, filePath, numberedContent) {
@@ -34,7 +37,7 @@ Each line of code is prefixed with its line number. Use those numbers when repor
 
 Focus on:
 1. Reentrancy (external calls before state changes)
-2. Integer overflow/underflow (critical if compiler <0.8.0)
+2. Integer overflow/underflow — ONLY if compiler <0.8.0, OR operation is inside an unchecked {} block, OR is inline assembly. Do NOT report for >=0.8.0 outside unchecked blocks.
 3. Access control (missing modifiers, tx.origin)
 4. Unchecked external call return values
 5. Front-running / transaction ordering
@@ -44,12 +47,28 @@ Focus on:
 9. Unsafe delegatecall
 10. Storage collision (proxy patterns)
 11. Signature replay / missing nonce
+12. Share-accounting / pool-balance logic errors (payout uses contract-wide balance instead of per-user tracked deposit)
 
 Rules:
 - Report only REAL, SPECIFIC issues with exact line numbers.
 - Do not guess.
 - If no issues, return an empty array.
 - Description and fix: 1-2 sentences each.
+
+REENTRANCY RULE: If a function has the nonReentrant modifier (or any reentrancy guard like a mutex/lock), do NOT report reentrancy for that function. Only report if you can name a SPECIFIC cross-function path that bypasses the guard.
+
+SEVERITY RUBRIC (apply strictly, override your default instinct):
+- CRITICAL: Direct loss/theft of user funds OR permanent lock of funds, exploitable by an unprivileged attacker.
+- HIGH: Conditional loss (requires specific state), or DoS that costs little to trigger, or loss requires a privileged role.
+- MEDIUM: Griefing, incorrect accounting without direct fund loss, DoS with meaningful cost.
+- LOW: Missing input validation, best-practice, informational.
+
+When a finding enables direct fund loss with no privileged role required, it is CRITICAL regardless of how logic-error-y the code looks.
+
+SEVERITY GUIDANCE:
+- Input Validation: LOW by default. MEDIUM only if the missing check directly enables theft, permanent lock, or unauthorized state change.
+- Denial of Service: MEDIUM only if attacker can cheaply and repeatedly block legitimate users. Unbounded loops over user-supplied arrays are LOW.
+
 
 Return ONLY valid JSON, no markdown:
 {
@@ -81,9 +100,20 @@ function safeParseJSON(rawText) {
     return null;
   }
 }
+const MAX_PROMPT_CHARS = 60000; // ~15K tokens, safely under gpt-oss-120b limits
+const MAX_RETRIES = 3;
 
 async function analyzeChunk(numberedText, startLine, path, contract, chain, tier) {
-  const prompt = buildPrompt(
+  var MAX_PROMPT_CHARS = 55000;
+  var MAX_RETRIES = 3;
+
+  if (numberedText.length > MAX_PROMPT_CHARS) {
+    var err = new Error("LLM_SKIPPED_OVERSIZED: " + numberedText.length + " chars > " + MAX_PROMPT_CHARS + " for " + path);
+    err.code = "LLM_SKIPPED_OVERSIZED";
+    throw err;
+  }
+
+  var prompt = buildPrompt(
     contract.contractName,
     contract.compilerVersion,
     chain,
@@ -91,43 +121,61 @@ async function analyzeChunk(numberedText, startLine, path, contract, chain, tier
     numberedText
   );
 
-  const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      "Authorization": `Bearer ${process.env.GROQ_API_KEY}`,
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify({
-      model: "openai/gpt-oss-120b",
-      messages: [{ role: "user", content: prompt }],
-      response_format: { type: "json_object" },
-      temperature: 0.1
-    })
-  });
+  var lastErr = null;
+  for (var attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+    var response;
+    try {
+      response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Authorization": "Bearer " + process.env.GROQ_API_KEY,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "openai/gpt-oss-120b",
+        messages: [{ role: "user", content: prompt }],
+        response_format: { type: "json_object" }, max_completion_tokens: 6000, reasoning_effort: "low",
+        temperature: 0,
+      }),
+      });
+    } catch (fetchErr) {
+      fetchErr.message = "fetch: " + fetchErr.message + " | cause: " + (fetchErr.cause && (fetchErr.cause.code || fetchErr.cause.message) || "unknown");
+      throw fetchErr;
+    }
 
-  if (!response.ok) {
-    const err = new Error(`Groq API error: ${response.status}`);
-    err.status = response.status;
-    err.retryAfter = response.headers.get("retry-after");
-    throw err;
+    if (response.ok) {
+      var data = await response.json();
+      if (!data.choices || !data.choices[0]) throw new Error("Malformed LLM response");
+      var parsed = safeParseJSON(data.choices[0].message.content);
+      if (!parsed || !parsed.vulnerabilities) return [];
+      return parsed.vulnerabilities.map(function(v) {
+        return Object.assign({}, v, {
+          file: path,
+          line: (v.line || 0) + startLine - 1,
+          cwe_id: CWE_MAP[v.type] || v.cwe_id || "CWE-UNKNOWN",
+        });
+      });
+    }
+
+    var bodyText = "";
+    try { bodyText = await response.text(); } catch (e) { bodyText = ""; }
+    lastErr = new Error("Groq API error: " + response.status + " - " + bodyText.slice(0, 400));
+
+    if (response.status === 413) {
+      lastErr.code = "LLM_SKIPPED_OVERSIZED";
+      throw lastErr;
+    }
+
+    if (response.status === 429 && attempt < MAX_RETRIES) {
+      var ra = parseInt(response.headers.get("retry-after") || "10", 10);
+      console.warn("[analyzer] 429 on " + path + ", retry in " + ra + "s (" + attempt + "/" + MAX_RETRIES + ")");
+      await new Promise(function(r) { setTimeout(r, ra * 1000); });
+      continue;
+    }
+
+    throw lastErr;
   }
-
-  const data = await response.json();
-  if (!data.choices || !data.choices[0]) {
-    const err = new Error("Malformed LLM response");
-    err.status = 500;
-    throw err;
-  }
-
-  const parsed = safeParseJSON(data.choices[0].message.content);
-  if (!parsed || !parsed.vulnerabilities) return [];
-
-  return parsed.vulnerabilities.map(v => ({
-    ...v,
-    file: path,
-    source: "llm",
-    cwe_id: CWE_MAP[v.type] || v.cwe_id || "CWE-UNKNOWN"
-  }));
+  throw lastErr;
 }
 
 async function classifyScope(findings, scopeText) {
@@ -164,7 +212,7 @@ Return ONLY JSON:
     body: JSON.stringify({
       model: "openai/gpt-oss-120b",
       messages: [{ role: "user", content: prompt }],
-      response_format: { type: "json_object" },
+      response_format: { type: "json_object" }, max_completion_tokens: 6000, reasoning_effort: "low",
       temperature: 0
     })
   });

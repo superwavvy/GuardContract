@@ -23,6 +23,48 @@ var getScope = scope.getScope;
 
 var cache = require("./cache.js");
 
+var CHUNK_LINES = 400;
+var CHUNK_OVERLAP = 30;
+
+var MAX_CHUNK_CHARS = 15000;
+
+function splitIntoChunks(content, maxChars, overlap) {
+  var lines = content.split("\n");
+  var chunks = [], start = 0;
+  while (start < lines.length) {
+    var size = 0, end = start;
+    while (end < lines.length &&
+           (end === start || size + lines[end].length + 8 <= maxChars)) {
+      size += lines[end].length + 8;
+      end++;
+    }
+    chunks.push({ text: lines.slice(start, end).join("\n"), startLine: start + 1 });
+    if (end >= lines.length) break;
+    start = Math.max(end - overlap, start + 1);
+  }
+  return chunks;
+}
+
+async function analyzeWithSplit(c, file, contract, chain, tier, depth) {
+  var numbered = c.text.split("\n").map(function(line, idx) {
+    return (idx + 1) + ": " + line;
+  }).join("\n");
+  try {
+    return await analyzeChunk(numbered, c.startLine, file.path, contract, chain, tier);
+  } catch (e) {
+    var lines = c.text.split("\n");
+    if (e.code === "LLM_SKIPPED_OVERSIZED" && depth < 4 && lines.length > 20) {
+      var mid = Math.floor(lines.length / 2);
+      var a = { text: lines.slice(0, mid + 10).join("\n"), startLine: c.startLine };
+      var b = { text: lines.slice(mid - 10).join("\n"), startLine: c.startLine + mid - 10 };
+      var ra = await analyzeWithSplit(a, file, contract, chain, tier, depth + 1);
+      var rb = await analyzeWithSplit(b, file, contract, chain, tier, depth + 1);
+      return ra.concat(rb);
+    }
+    throw e;
+  }
+}
+
 async function scanContract(address, chainArg) {
   var chain = chainArg || (await detectChain(address));
   if (!chain) {
@@ -66,16 +108,34 @@ async function scanContract(address, chainArg) {
       console.log("  pattern: " + file.path + " -> " + patterns.length + " findings");
     }
 
-    var numbered = file.content.split("\n").map(function(line, idx) {
-      return (idx + 1) + ": " + line;
-    }).join("\n");
-
     var llmFindings = [];
-    try {
-      llmFindings = await analyzeChunk(numbered, 1, file.path, contract, chain, tier);
-    } catch (e) {
-      console.log("  LLM failed on " + file.path + ": " + e.message);
+var llmStatus = "ok";
+var shouldLLM = (file.path === contract.primaryFile.path) || patterns.length > 0;
+var chunks = shouldLLM ? splitIntoChunks(file.content, MAX_CHUNK_CHARS, CHUNK_OVERLAP) : [];
+if (!shouldLLM) {
+  llmStatus = "skipped_secondary";
+  console.log("  LLM skip (secondary): " + file.path);
+}
+if (!file._llmStatuses) file._llmStatuses = {};
+
+    for (var ci = 0; ci < chunks.length; ci++) {
+      if (ci > 0) await new Promise(function(r){ setTimeout(r, 8000); });
+      var c = chunks[ci];
+      try {
+        var cf = await analyzeWithSplit(c, file, contract, chain, tier, 0);
+        llmFindings = llmFindings.concat(cf);
+      } catch (e) {
+        if (e.code === "LLM_SKIPPED_OVERSIZED") {
+          llmStatus = "skipped_oversized";
+          console.log("  LLM SKIPPED (oversized): " + file.path + " chunk " + ci);
+        } else {
+          if (llmStatus !== "skipped_oversized") llmStatus = "failed";
+          console.log("  LLM failed: " + file.path + " chunk " + ci + " - " + e.message);
+        }
+      }
     }
+
+    file._llmStatuses[file.path] = llmStatus;
 
     var merged = mergeAndDedupe(patterns, llmFindings);
     var verified = applyVerification(merged, file.content, { verbose: false });
@@ -103,6 +163,15 @@ async function scanContract(address, chainArg) {
     solidityRange: version.raw,
     tier: tier,
     filesAnalyzed: contract.files.length,
+    llmStatus: (function() {
+      var c = { ok: 0, skipped_secondary: 0, skipped_oversized: 0, failed: 0, filtered: 0 };
+      for (var k = 0; k < contract.files.length; k++) {
+        var f = contract.files[k];
+        var st = (f._llmStatuses && f._llmStatuses[f.path]) || "filtered";
+        c[st] = (c[st] || 0) + 1;
+      }
+      return c;
+    })(),
     findings: scopeLabeled,
     scoped: !!currentScope
   };
@@ -129,6 +198,26 @@ function familyOf(type) {
   return t;
 }
 
+
+function postClassify(findings) {
+  for (var i = 0; i < findings.length; i++) {
+    var f = findings[i];
+    var t = String(f.type || '').toLowerCase();
+    // Strip 'Front-Running / ' style prefixes the LLM adds when hedging
+    f.type = String(f.type || '').replace(/^Front-?Running\s*\/\s*/i, '').trim();
+    t = f.type.toLowerCase();
+    // Share-accounting / pool-balance = always CRITICAL (direct fund loss, no role needed)
+    if (/share.?accounting|pool.?balance|logic error/.test(t) && /releasable|totalTokenShares|balanceOf\(address\(this\)\)|release/i.test(f.description || '')) {
+      f.severity = 'CRITICAL';
+      f.type = 'Share Accounting / Pool-Balance Logic Error';
+    }
+    // Reentrancy on a nonReentrant function = drop if description doesn't name a bypass
+    if (/reentr/.test(t) && !/bypass|without.*guard|guard.*bypass/i.test(f.description || '')) {
+      f._suspectReentrancy = true;
+    }
+  }
+  return findings;
+}
 function mergeAndDedupe(patterns, llm) {
   var map = {};
 
@@ -179,7 +268,7 @@ function mergeAndDedupe(patterns, llm) {
     }
   }
 
-  return final;
+  return postClassify(final);
 }
 
 module.exports = {
