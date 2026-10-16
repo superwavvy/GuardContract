@@ -137,7 +137,18 @@ if (!file._llmStatuses) file._llmStatuses = {};
 
     file._llmStatuses[file.path] = llmStatus;
 
+    if (process.env.GC_DEBUG_RAW) {
+  console.log("=== RAW LLM for " + file.path + " ===");
+  console.log(JSON.stringify(llmFindings, null, 2));
+}
+
+    if (process.env.GC_DEBUG_STAGES) {
+  console.log("  [STAGE] raw llm: " + llmFindings.length + " @ " + llmFindings.map(function(f){return f.line}).join(","));
+}
     var merged = mergeAndDedupe(patterns, llmFindings);
+if (process.env.GC_DEBUG_STAGES) {
+  console.log("  [STAGE] after merge: " + merged.length + " @ " + merged.map(function(f){return f.line}).join(","));
+}
     var verified = applyVerification(merged, file.content, { verbose: false });
     var classified = applyCallerAnalysis(verified, file.content);
     classified = classified.filter(function(f) { return f.severity !== "LOW"; });

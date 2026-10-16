@@ -34,11 +34,11 @@ const SOL_PATTERNS = [
     type: "Integer Overflow / Underflow",
     severity: "HIGH",
     cwe_id: "CWE-190",
-    pattern: /(?:[^\w])(\+|-|\*)(?!=)/g,
+    pattern: /^(?!\s*(?:\/\/|\/\*|\*))(?!.*\.(?:add|sub|mul)\()(?=.*(?:[\w)\]]\s*\*\s*[\w(]|[+\-*]=|[\w)\]]\s*(?<![+\-])[+\-](?![+\-=])\s*[\w(])).*$/gm,
     description: "Solidity <0.8.0 has no built-in overflow checks. Arithmetic without SafeMath can silently wrap.",
     fix: "Use SafeMath, or upgrade to Solidity 0.8.0+.",
     precondition: function(source, tier) {
-      return tier === "pre08" && !/SafeMath/.test(source);
+      return tier === "pre08";
     }
   },
   {
@@ -374,7 +374,13 @@ function analyzeCEI(source, filePath) {
     var fnStart = findFunctionStart(lines, callLine);
     if (fnStart === 0 && !/function\s+\w+\s*\(/.test(lines[0])) continue;
 
-    var fnHeader = lines[fnStart];
+    // Collect full signature — function keyword through opening brace (multi-line safe)
+    var sigLines = [];
+    for (var si = fnStart; si < lines.length && si < fnStart + 40; si++) {
+      sigLines.push(lines[si]);
+      if (lines[si].indexOf("{") !== -1) break;
+    }
+    var fnHeader = sigLines.join(" ");
     if (/nonReentrant/.test(fnHeader)) continue;
 
     var fnKey = filePath + "::" + fnStart;
@@ -410,13 +416,12 @@ function analyzeCEI(source, filePath) {
 }
 
 function runPatterns(source, filePath, tier) {
-  if (!tier) tier = "unknown";
+  if (!tier) { const m = source.match(/pragma\s+solidity\s*[\^>=~\s]*0\.(\d+)/); tier = (m && +m[1] < 8) ? "pre08" : "unknown"; }
   var findings = [];
 
   for (var i = 0; i < SOL_PATTERNS.length; i++) {
     var rule = SOL_PATTERNS[i];
 
-    if (rule.id === "unchecked-math-pre-08") continue;
     if (rule.id === "front-running") continue;
     if (rule.precondition && !rule.precondition(source, tier)) continue;
 

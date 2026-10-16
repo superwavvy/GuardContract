@@ -65,7 +65,7 @@ Telegram reply
 
 Each rule has a **`contextCheck`** that suppresses false positives. Example: `unchecked-low-level-call` doesn't fire if a `require(...)` or `if (success)` follows the call within 5 lines.
 
-## The Tuning Approach
+## Tuning corpus (not a benchmark)
 
 Every rule was tuned against **real contracts**, not synthetic examples. 8 contracts scanned; each produced a fix.
 
@@ -80,7 +80,9 @@ Every rule was tuned against **real contracts**, not synthetic examples. 8 contr
 | FlashLoopAdapter | 5 | 3 (2 CRIT) | **3 (matches real $305K exploit)** |
 | Sepolia test | — | 1 (CRIT) | Regression test |
 
-**Precision improved from ~25% to ~66%** across the corpus without sacrificing true positives.
+_These contracts were used to tune rules, so any precision figure here is in-sample. Holdout results in [BENCHMARK.md](BENCHMARK.md)._
+
+**On this tuning corpus (in-sample) precision improved from ~25% to ~66%.** This is a small hand-picked set, not a benchmark — see [BENCHMARK.md](BENCHMARK.md) for holdout results on SmartBugs Curated.
 
 ## Design Principles
 
@@ -94,8 +96,10 @@ Every rule was tuned against **real contracts**, not synthetic examples. 8 contr
 ## Setup
 
 ```bash
-git clone git@github.com:superwavvy/guardcontract.git
-cd guardcontract
+git clone git@github.com:superwavvy/Guard-Contract.git
+# or, if you don't use SSH:
+git clone https://github.com/superwavvy/Guard-Contract.git
+cd Guard-Contract
 npm install
 ```
 
