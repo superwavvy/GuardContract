@@ -31,3 +31,8 @@ Pending. Non-determinism observed at `temperature: 0` — same file produces dif
 5. **Reentrancy hit does not equal reentrancy rule.** A hit counts if any rule fires near the annotated line. The dedicated reentrancy rule fired on 13/32; the rest were the legacy-call-value rule flagging the same line.
 6. **Arithmetic recall is inflated by design.** The overflow rule flags every raw arithmetic line in pre-0.8 code, so high recall is expected. The cost shows up in unmatched findings.
 7. **Fixes after the first run.** First pass scored arithmetic 0/23. Two bugs of mine: the rule skipped any file mentioning SafeMath, and the harness never passed a compiler tier. Both fixed after seeing results; see commit history.
+
+## Triage of unmatched findings (n=20 random sample)
+- 159/245 unmatched come from the overflow rule alone.
+- Sample: 15 noise, 3 real, 2 unsure. Two real ones are issues SmartBugs does not label (unchecked send, blockhash randomness); one is the same reentrancy bug, 9 lines from the annotation (outside the 3-line window).
+- Known rule bugs from the sample: overflow rule fires inside SafeMath's own library; ERC20-transfer rule fires on ETH .transfer() and on returned results.
