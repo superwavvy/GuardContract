@@ -4,3 +4,6 @@ node_modules/
 dev/
 *.log
 BENCHMARK-results.md
+a.txt
+b.txt
+patch-*.js
