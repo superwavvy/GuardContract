@@ -430,7 +430,7 @@ function runPatterns(source, filePath, tier) {
     var count = 0;
     var seen = {};
 
-    while ((match = regex.exec(source)) !== null && count < 5) {
+    while ((match = regex.exec(source)) !== null && count < (+process.env.MAXPER||5)) {
       var line = lineNumberAt(source, match.index);
       var key = rule.id + ":" + line;
       if (seen[key]) {
