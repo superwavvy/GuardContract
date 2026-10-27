@@ -237,6 +237,22 @@ function formatReport(r) {
     }) });
   }
 
+  /* _mergeDupes */
+  if (Array.isArray(r.findings)) {
+    var _g = {}, _order = [];
+    r.findings.forEach(function (f) {
+      var k = [f.severity || "", f.type, f.file, callerTag(f)].join("|");
+      if (!_g[k]) { _g[k] = { f: f, lines: [], corr: false }; _order.push(k); }
+      _g[k].lines.push(f.line);
+      if (f.corroborated) _g[k].corr = true;
+    });
+    r = Object.assign({}, r, { findings: _order.map(function (k) {
+      var g = _g[k];
+      var ls = Array.from(new Set(g.lines.map(Number))).filter(function (n) { return !isNaN(n); }).sort(function (a, b) { return a - b; });
+      if (ls.length < 2) return g.corr ? Object.assign({}, g.f, { corroborated: true }) : g.f;
+      return Object.assign({}, g.f, { line: ls.join(", "), type: g.f.type + " ×" + ls.length, corroborated: g.corr });
+    }) });
+  }
   const bySev = groupBySeverity(r.findings);
   const totalFindings = r.findings.length;
   const inScopeCount = r.scoped
