@@ -1,3 +1,15 @@
+function fnBody(src, idx) {
+  const rest = src.slice(idx);
+  const m = /[{;]/.exec(rest);
+  if (!m || m[0] === ";") return "";
+  let d = 0;
+  for (let i = m.index; i < rest.length; i++) {
+    if (rest[i] === "{") d++;
+    else if (rest[i] === "}" && --d === 0) return rest.slice(m.index, i + 1);
+  }
+  return rest.slice(m.index, m.index + 2000);
+}
+
 // Solidity pattern rules — context-aware, function-anchored.
 // Design: high signal over high recall.
 
@@ -149,7 +161,7 @@ const SOL_PATTERNS = [
   {
     id: "owner-pause",
     type: "Owner Can Pause / Freeze",
-    severity: "MEDIUM",
+    severity: "LOW",
     cwe_id: "CWE-269",
     pattern: /function\s+(pause|freeze|blacklist|freezeAccount)\s*\(/g,
     description: "Contract can be paused or users blacklisted. Owner can freeze all user funds — centralization risk.",
@@ -301,7 +313,7 @@ const SOL_PATTERNS = [
   {
     id: "governance-short-timelock",
     type: "Short Timelock Delay",
-    severity: "MEDIUM",
+    severity: "HIGH",
     cwe_id: "CWE-662",
     pattern: /(uint256|uint)\s+(public\s+)?(delay|timelock|votingDelay|votingPeriod)\s*=\s*(\d+)/g,
     description: "Timelock or voting delay is unusually short. Proposals can execute before the community has time to review.",
@@ -323,6 +335,35 @@ const SOL_PATTERNS = [
     description: "Code calls back into msg.sender and trusts its response as the only authorization check. A malicious contract can return whatever makes the check pass.",
     fix: "Maintain an on-chain registry of trusted callers; never ask msg.sender to vouch for itself."
   }
+,{
+  id: "gov-spot-voting-power",
+  type: "Flash-Loan Governance (Spot Stake Voting)",
+  severity: "CRITICAL",
+  cwe_id: "CWE-841",
+  pattern: /function\s+(vote|castVote|castVoteBySig|applyFor\w*|join\w*|getVotes|votingPower|getVotingPower)\s*\(/g,
+  description: "Voting power or membership comes from the live token/staked balance with no snapshot. An attacker can flash-borrow tokens, win a majority, pass a proposal and repay in one transaction.",
+  fix: "Use checkpointed votes (getPastVotes at a snapshot block), add a voting delay, and lock stake for a minimum period.",
+  contextCheck: function(source, idx) {
+    const b = fnBody(source, idx);
+    if (!b) return false;
+    const spot = /balanceOf\s*\(|\b(frozen|staked|stakes?|deposits?|locked)\w*\s*\[/i.test(b);
+    const snap = /getPast|checkpoint|snapshot|votingDelay|startBlock|lockUntil|unlockTime/i.test(b);
+    return spot && !snap;
+  }
+},
+{
+  id: "gov-execute-no-time-gate",
+  type: "Governance Execute Without Time Gate",
+  severity: "HIGH",
+  cwe_id: "CWE-367",
+  pattern: /function\s+(execute|executeProposal|queueAndExecute)\s*\(/g,
+  description: "execute() never checks a voting-end time or timelock ETA, so propose, vote and execute can all happen in one block.",
+  fix: "Require voting to have ended and block.timestamp >= eta (48h minimum) before execution.",
+  contextCheck: function(source, idx) {
+    const b = fnBody(source, idx);
+    return !!b && !/block\.(timestamp|number)|\beta\b|votingEnd|endTime|endBlock|deadline|executableAt|executeAfter/i.test(b);
+  }
+}
 ];
 
 function lineNumberAt(source, index) {

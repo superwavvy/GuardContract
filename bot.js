@@ -78,7 +78,7 @@ bot.command("full", async (ctx) => {
     return ctx.reply("❌ No cached chain for this address. Run a scan first.");
   }
 
-  const report = cache.get(address, chain);
+  const report = cache.get(address, chain); if (report && !report.address) report.address = address;
   if (!report) {
     return ctx.reply("❌ No cached report. Run a scan first (cache expires after 24h).");
   }
@@ -117,7 +117,7 @@ bot.on("message:text", async (ctx) => {
   );
 
   try {
-    const report = await scanContract(address, chainArg);
+    const report = await scanContract(address, chainArg); if (report && !report.address) report.address = address;
     await ctx.api.editMessageText(
       statusMsg.chat.id,
       statusMsg.message_id,
@@ -135,7 +135,7 @@ bot.on("message:text", async (ctx) => {
 
 // ==================== CONSTANTS ====================
 
-const DIV = "━━━━━━━━━━━━━━━━━━━━━━━━";
+const DIV = "━".repeat(22);
 
 const CHAIN_NAMES = {
   eth: "Ethereum", arb: "Arbitrum", base: "Base",
@@ -183,6 +183,22 @@ function escapeMd(str) {
   return String(str || "").replace(/([_*`\[\]])/g, "\\$1");
 }
 
+
+function getExplorerLink(chain, address) {
+  var links = {
+    eth: 'https://etherscan.io/address/',
+    arbitrum: 'https://arbiscan.io/address/',
+    base: 'https://basescan.org/address/',
+    polygon: 'https://polygonscan.com/address/',
+    optimism: 'https://optimistic.etherscan.io/address/',
+    bsc: 'https://bscscan.com/address/',
+    avax: 'https://snowtrace.io/address/',
+    fantom: 'https://ftmscan.com/address/'
+  };
+  var base = links[chain.toLowerCase()] || 'https://etherscan.io/address/';
+  return base + address;
+}
+
 // ==================== SHORT REPORT ====================
 
 function llmStatusLine(s) {
@@ -195,8 +211,25 @@ function llmStatusLine(s) {
   if (s.failed) parts.push("❌ failed:" + s.failed);
   return parts.length ? parts.join(" · ") : "none";
 }
+function explorerUrl(chain, addr) {
+  var base = {
+    eth: "https://etherscan.io/address/",
+    arbitrum: "https://arbiscan.io/address/",
+    base: "https://basescan.org/address/",
+    polygon: "https://polygonscan.com/address/",
+    optimism: "https://optimistic.etherscan.io/address/"
+  }[chain] || "https://etherscan.io/address/";
+  return base + addr + "#code";
+}
 function formatReport(r) {
   if (!r.ok) return "❌ *Scan failed*\n\n" + r.reason;
+  var _v = /0\.(\d+)\./.exec(String(r.compilerVersion || ""));
+  if (_v && parseInt(_v[1], 10) >= 8 && Array.isArray(r.findings)) {
+    r = Object.assign({}, r, { findings: r.findings.filter(function (f) {
+      if (!/integer\s*(over|under)flow|overflow\s*\/\s*underflow/i.test(f.type || "")) return true;
+      return /unchecked|assembly/i.test(JSON.stringify(f));
+    }) });
+  }
 
   const bySev = groupBySeverity(r.findings);
   const totalFindings = r.findings.length;
@@ -206,7 +239,7 @@ function formatReport(r) {
 
   let out = "🛡️ *GuardContract Pre-Screen*\n";
   out += DIV + "\n";
-  out += "📄 `" + r.contractName + "`\n";
+  out += "📄 `" + r.contractName + "`" + (r.address ? "  [↗ Explorer](" + explorerUrl(r.chain, r.address) + ")" : "") + "\n";
   out += DIV + "\n\n";
 
   out += "*🌐 Network*     `" + (CHAIN_NAMES[r.chain] || r.chain) + "`";
@@ -249,7 +282,8 @@ function formatReport(r) {
         const shortFile = f.file.split("/").pop();
         const tag = callerTag(f);
         out += branch + " `" + f.type + "`" + scopeTag + "\n";
-        out += (isLast ? " " : "│") + "  ├ " + shortFile + ":" + f.line;
+        const _ref = shortFile.replace(/_/g, "\\_") + ":" + f.line;
+        out += (isLast ? " " : "│") + "  ├ " + (r.address ? "[" + _ref + "](" + explorerUrl(r.chain, r.address) + ")" : _ref);
         if (f.corroborated) out += " _· corroborated_";
         out += "\n";
         if (tag) {
@@ -271,6 +305,7 @@ function formatReport(r) {
   }
 
   out += DIV + "\n";
+  out += "🔗 *View Contract:* " + getExplorerLink(r.chain, r.address) + "\n";
   out += "⚠️ _Pre-screen only. Verify each finding manually before reporting._";
   return out;
 }
@@ -338,6 +373,7 @@ function buildFullReport(r) {
   }
 
   current += DIV + "\n";
+  current += "🔗 *View Contract:* " + getExplorerLink(r.chain, r.address) + "\n\n";
   current += "⚠️ _Pre-screen only. Verify each finding manually._";
   messages.push(current);
 
