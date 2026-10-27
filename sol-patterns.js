@@ -38,7 +38,7 @@ const SOL_PATTERNS = [
     description: "Solidity <0.8.0 has no built-in overflow checks. Arithmetic without SafeMath can silently wrap.",
     fix: "Use SafeMath, or upgrade to Solidity 0.8.0+.",
     precondition: function(source, tier) {
-      return tier === "pre08";
+      return tier === "pre08" || (tier === "post08" && source.includes("unchecked"));
     }
   },
   {
