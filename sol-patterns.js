@@ -380,6 +380,131 @@ const SOL_PATTERNS = [
 }
 ];
 
+/* _precision_v1 */
+/* _precision_v2 */
+var _PRIV = /\b(_?owner|_?admin|m_owner|governance|operator|implementation|creator|controller|manager|isOwner|isAdmin|isOperator)s?\s*(\[[^\]]*\])?\s*=(?!=)|\b_?transferOwnership\s*\(/;
+function _contractAt(src, idx) {
+  const re = /\b(?:contract|library)\s+(\w+)/g;
+  const pre = src.slice(0, idx);
+  let m, last = "";
+  while ((m = re.exec(pre))) last = m[1];
+  return last;
+}
+
+function lineAt(src, idx) {
+  const s = idx > 0 ? src.lastIndexOf("\n", idx - 1) + 1 : 0;
+  let e = src.indexOf("\n", idx);
+  if (e < 0) e = src.length;
+  return src.slice(s, e);
+}
+function hasTopLevelComma(s, from) {
+  let d = 1;
+  for (let i = from; i < s.length; i++) {
+    const c = s[i];
+    if (c === "(" || c === "[") d++;
+    else if (c === ")" || c === "]") { if (--d === 0) return false; }
+    else if (c === "," && d === 1) return true;
+  }
+  return true;
+}
+function _wrap(key, extra) {
+  const r = SOL_PATTERNS.find(function (x) { return x.id === key || x.type === key; });
+  if (!r) return;
+  const old = r.contextCheck;
+  r.contextCheck = function (src, idx) {
+    return (!old || old.call(r, src, idx)) && extra(src, idx);
+  };
+}
+function _govOK(src) {
+  return /\bvote\w*/i.test(src) && /\b(propos\w*|quorum|senat\w*|governor\w*|ballot)\b/i.test(src);
+}
+
+_wrap("Unchecked ERC20 Transfer", function (src, idx) {
+  if (/using\s+SafeERC20|SafeERC20\./.test(src)) return false;
+  const L = lineAt(src, idx);
+  const m = /\.(transfer|transferFrom)\s*\(/.exec(L);
+  if (!m) return true;
+  if (!hasTopLevelComma(L, m.index + m[0].length)) return false;
+  return !/(\brequire\s*\(|\bassert\s*\(|\bif\s*\(|\breturn\b|\bbool\b|[^=!<>]=[^=])/.test(L.slice(0, m.index));
+});
+
+_wrap("unchecked-math-pre-08", function (src, idx) {
+  const L = lineAt(src, idx);
+  if (/\bfor\s*\(|\bwhile\s*\(|\bconstant\b/.test(L)) return false;
+  if (/^[\s\w.]*=\s*[\d\s+\-*\/().eE]+;\s*(\/\/.*)?$/.test(L)) return false;
+  if (/\b(now|block\.timestamp)\s*\+\s*\d+\s*(seconds|minutes|hours|days|weeks)?\b/.test(L)) return false;
+  return true;
+});
+
+_wrap("gov-spot-voting-power", function (src) { return _govOK(src); });
+_wrap("gov-execute-no-time-gate", function (src) { return _govOK(src); });
+_wrap("governance-short-timelock", function (src) { return _govOK(src) || /timelock/i.test(src); });
+
+SOL_PATTERNS.push({
+  id: "unprotected-initialize",
+  type: "Unprotected Initializer",
+  severity: "CRITICAL",
+  cwe_id: "CWE-284",
+  pattern: /function\s+(initialize|init\w*|initializeV\d+)\s*\([^)]*\)[^{;]*\{/g,
+  description: "initialize() can be called by anyone and sets privileged state. An attacker can call it first (or again) and take ownership of the contract or proxy.",
+  fix: "Add the initializer modifier (OpenZeppelin Initializable), or a one-time initialized flag, and call _disableInitializers() in the implementation constructor.",
+  contextCheck: function (source, idx) {
+    const brace = source.indexOf("{", idx);
+    if (brace < 0) return false;
+    const head = source.slice(idx, brace);
+    if (/\b(internal|private|view|pure)\b/.test(head)) return false;
+    if (/\b(initializer|reinitializer|onlyInitializing)\b|\bonly\w+|\bauth\b|requiresAuth/.test(head)) return false;
+    const b = fnBodyDeep(source, idx, 2);
+    if (!b) return false;
+    if (/\b(initialized|_initialized|isInitialized|inited)\b/i.test(b) && /\b(require|if)\s*\(/.test(b)) return false;
+    if (/\b(require|assert|if)\s*\([^;]*(msg\.sender|_msgSender\s*\(\s*\)|tx\.origin)/.test(b)) return false;
+    return _PRIV.test(b) || /__\w+_init\s*\(|_setupRole|_grantRole/.test(b);
+  }
+});
+
+SOL_PATTERNS.push({
+  id: "unprotected-role-assignment",
+  type: "Unprotected Privileged Role Assignment",
+  severity: "CRITICAL",
+  cwe_id: "CWE-284",
+  pattern: /function\s+\w+\s*\([^)]*\)[^{;]*\{/g,
+  description: "A public function assigns an owner/admin-style role with no caller check, so anyone can take control of the contract.",
+  fix: "Add an access modifier (onlyOwner or role-based) or require() that msg.sender is the current owner before changing roles.",
+  contextCheck: function (source, idx) {
+    const brace = source.indexOf("{", idx);
+    if (brace < 0) return false;
+    const head = source.slice(idx, brace);
+    const name = (/function\s+(\w+)/.exec(head) || [])[1] || "";
+    if (name === _contractAt(source, idx)) return false;
+    if (/^(initialize|init\w*)$/i.test(name) || /^__/.test(name)) return false;
+    if (/\b(view|pure|internal|private)\b/.test(head)) return false;
+    if (/\bonly\w+|\bauth\b|requiresAuth|restricted|initializer/.test(head)) return false;
+    const b = fnBodyDeep(source, idx, 2);
+    if (!b) return false;
+    if (/\b(require|assert|if)\s*\([^;]*(msg\.sender|_msgSender\s*\(\s*\)|tx\.origin)|_checkOwner|_checkRole|hasRole\s*\(|\bonly\w+/.test(b)) return false;
+    return _PRIV.test(b);
+  }
+});
+
+SOL_PATTERNS.push({
+  id: "spot-price-oracle",
+  type: "Spot Price Used as Oracle",
+  severity: "HIGH",
+  cwe_id: "CWE-682",
+  pattern: /\b(getReserves\s*\(|\.slot0\s*\()/g,
+  description: "A price is computed from a pool's current reserves or slot0. These can be pushed to any value inside one transaction with a flash loan, so anything relying on this price can be manipulated.",
+  fix: "Use a TWAP or an external oracle such as Chainlink, and add sanity bounds against the manipulated range.",
+  contextCheck: function (source, idx) {
+    if (/function\s+(getReserves|slot0)\s*\([^)]*\)[^;{]*\{/.test(source)) return false;
+    if (/latestRoundData|\bobserve\s*\(|consult\s*\(|\btwap\b|priceFeed|AggregatorV3|getPriceUnsafe/i.test(source)) return false;
+    const fs0 = source.lastIndexOf("function ", idx);
+    if (fs0 < 0) return false;
+    const b = fnBody(source, fs0);
+    return /[\w)\]]\s*[*\/]\s*[\w(]/.test(b);
+  }
+});
+
+
 function lineNumberAt(source, index) {
   return source.substring(0, index).split("\n").length;
 }
