@@ -6,6 +6,7 @@ function fnBodyDeep(src, idx, depth) {
   let extra = "";
   for (const name of calls) {
     if (seen[name] || /^(require|assert|revert|if|for|while|emit|address|keccak256|uint\d*|bytes\d*|abi)$/.test(name)) continue;
+    if (/^[A-Z]/.test(name)) continue;
     seen[name] = 1;
     const m = new RegExp("function\\s+" + name + "\\s*\\(").exec(src);
     if (m) extra += "\n" + fnBodyDeep(src, m.index, depth - 1);
@@ -384,7 +385,7 @@ const SOL_PATTERNS = [
 /* _precision_v2 */
 var _PRIV = /\b(_?owner|_?admin|m_owner|governance|operator|implementation|creator|controller|manager|isOwner|isAdmin|isOperator)s?\s*(\[[^\]]*\])?\s*=(?!=)|\b_?transferOwnership\s*\(/;
 function _contractAt(src, idx) {
-  const re = /\b(?:contract|library)\s+(\w+)/g;
+  const re = /^[ \t]*(?:abstract\s+)?(?:contract|library)\s+(\w+)/gm; /* _precision_v3 */
   const pre = src.slice(0, idx);
   let m, last = "";
   while ((m = re.exec(pre))) last = m[1];
