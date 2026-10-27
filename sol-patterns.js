@@ -1,3 +1,17 @@
+function fnBodyDeep(src, idx, depth) {
+  const body = fnBody(src, idx);
+  if (depth <= 0 || !body) return body;
+  const seen = {};
+  const calls = body.match(/\b_?[A-Za-z]\w*(?=\s*\()/g) || [];
+  let extra = "";
+  for (const name of calls) {
+    if (seen[name] || /^(require|assert|revert|if|for|while|emit|address|keccak256|uint\d*|bytes\d*|abi)$/.test(name)) continue;
+    seen[name] = 1;
+    const m = new RegExp("function\\s+" + name + "\\s*\\(").exec(src);
+    if (m) extra += "\n" + fnBodyDeep(src, m.index, depth - 1);
+  }
+  return body + extra;
+}
 function fnBody(src, idx) {
   const rest = src.slice(idx);
   const m = /[{;]/.exec(rest);
@@ -340,13 +354,13 @@ const SOL_PATTERNS = [
   type: "Flash-Loan Governance (Spot Stake Voting)",
   severity: "CRITICAL",
   cwe_id: "CWE-841",
-  pattern: /function\s+(vote|castVote|castVoteBySig|applyFor\w*|join\w*|getVotes|votingPower|getVotingPower)\s*\(/g,
+  pattern: /function\s+(vote|castVote|castVoteBySig|applyFor\w*|join\w*|getVotes|votingPower|getVotingPower|refresh|register\w*)\s*\(/g,
   description: "Voting power or membership comes from the live token/staked balance with no snapshot. An attacker can flash-borrow tokens, win a majority, pass a proposal and repay in one transaction.",
   fix: "Use checkpointed votes (getPastVotes at a snapshot block), add a voting delay, and lock stake for a minimum period.",
   contextCheck: function(source, idx) {
-    const b = fnBody(source, idx);
+    const b = fnBodyDeep(source, idx, 2);
     if (!b) return false;
-    const spot = /balanceOf\s*\(|\b(frozen|staked|stakes?|deposits?|locked)\w*\s*\[/i.test(b);
+    const spot = /\b\w*(frozen|staked?|stakeOf|locked|balanceOf|deposit)\w*\s*[\(\[]/i.test(b);
     const snap = /getPast|checkpoint|snapshot|votingDelay|startBlock|lockUntil|unlockTime/i.test(b);
     return spot && !snap;
   }

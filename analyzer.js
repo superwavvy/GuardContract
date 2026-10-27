@@ -1,3 +1,12 @@
+async function _groqFetch(url, opts) {
+  for (let i = 0; i < 4; i++) {
+    const res = await fetch(url, opts);
+    if (res.status !== 429 || i === 3) return res;
+    const ra = parseFloat(res.headers.get("retry-after"));
+    const wait = Math.min(isNaN(ra) ? 2 ** (i + 1) : ra + 0.5, 25);
+    await new Promise((r) => setTimeout(r, wait * 1000));
+  }
+}
 const { parseSolidityVersion } = require("./sol-version.js");
 
 const CWE_MAP = {
@@ -125,7 +134,7 @@ async function analyzeChunk(numberedText, startLine, path, contract, chain, tier
   for (var attempt = 1; attempt <= MAX_RETRIES; attempt++) {
     var response;
     try {
-      response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+      response = await _groqFetch("https://api.groq.com/openai/v1/chat/completions", {
       method: "POST",
       headers: {
         "Authorization": "Bearer " + process.env.GROQ_API_KEY,
@@ -203,7 +212,7 @@ Return ONLY JSON:
   ]
 }`;
 
-  const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+  const res = await _groqFetch("https://api.groq.com/openai/v1/chat/completions", {
     method: "POST",
     headers: {
       "Authorization": `Bearer ${process.env.GROQ_API_KEY}`,

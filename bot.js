@@ -223,6 +223,12 @@ function explorerUrl(chain, addr) {
 }
 function formatReport(r) {
   if (!r.ok) return "❌ *Scan failed*\n\n" + r.reason;
+  var _OZ_LIBS = /^(SafeERC20|SafeCast|SafeMath|SignedSafeMath|SignedMath|Math|Address|Context|Ownable|Ownable2Step|ERC20|IERC20|ERC20Permit|Strings|ReentrancyGuard|Pausable|ECDSA|MessageHashUtils|Counters|StorageSlot|Arrays|Checkpoints)\.sol$/;
+  if (Array.isArray(r.findings)) {
+    r = Object.assign({}, r, { findings: r.findings.filter(function (f) {
+      return !_OZ_LIBS.test(String(f.file || "").split("/").pop());
+    }) });
+  }
   var _v = /0\.(\d+)\./.exec(String(r.compilerVersion || ""));
   if (_v && parseInt(_v[1], 10) >= 8 && Array.isArray(r.findings)) {
     r = Object.assign({}, r, { findings: r.findings.filter(function (f) {
