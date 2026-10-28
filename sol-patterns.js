@@ -167,7 +167,7 @@ const SOL_PATTERNS = [
   {
     id: "owner-mint",
     type: "Owner-Controlled Mint",
-    severity: "HIGH",
+    severity: "LOW",
     cwe_id: "CWE-269",
     pattern: /function\s+mint\s*\([^)]*\)[^{]*\{[^}]*(?:_mint\s*\(|totalSupply\s*\+=|balanceOf\[[^\]]+\]\s*\+=)/gs,
     description: "Owner can mint tokens. If unlimited and unprotected, they can dilute holders to zero.",
@@ -380,6 +380,153 @@ const SOL_PATTERNS = [
   }
 }
 ];
+
+/* _detectors_v3 */
+function _args(src, from) {
+  const out = []; let d = 0, cur = "";
+  for (let i = from; i < src.length && i < from + 1500; i++) {
+    const c = src[i];
+    if (c === "(" || c === "[" || c === "{") { d++; if (d === 1) continue; }
+    else if (c === ")" || c === "]" || c === "}") { d--; if (d === 0) { out.push(cur.trim()); return out; } }
+    else if (c === "," && d === 1) { out.push(cur.trim()); cur = ""; continue; }
+    cur += c;
+  }
+  return out;
+}
+
+SOL_PATTERNS.push({
+  id: "callback-no-caller-check",
+  type: "Callback Without Caller Validation",
+  severity: "HIGH",
+  cwe_id: "CWE-345",
+  pattern: /function\s+(\w*[Cc]allback|uniswapV2Call|pancakeCall|onFlashLoan|executeOperation|receiveFlashLoan)\s*\([^)]*\)[^{;]*\{/g,
+  description: "A swap or flash-loan callback moves funds or makes calls but never verifies that msg.sender is the expected pool or lender. Anyone can call it directly with crafted data.",
+  fix: "Require msg.sender to equal the expected pool or lender (or verify the pool address from the factory) before acting, and validate the initiator.",
+  contextCheck: function (source, idx) {
+    const brace = source.indexOf("{", idx);
+    if (brace < 0) return false;
+    const head = source.slice(idx, brace);
+    if (/\b(internal|private|view|pure)\b/.test(head)) return false;
+    if (/\bonly[A-Za-z]\w*|\bauth\b|requiresAuth/.test(head)) return false;
+    const b = fnBodyDeep(source, idx, 1);
+    if (!b) return false;
+    if (/\b(require|assert|if)\s*\([^;]*(msg\.sender|_msgSender\s*\(\s*\))/.test(b)) return false;
+    if (/CallbackValidation|verifyCallback|PoolAddress\.|computeAddress|isValidPool|validatePool/i.test(b)) return false;
+    return /\.(transfer|transferFrom|safeTransfer|safeTransferFrom|call|delegatecall|approve)\s*[({]/.test(b);
+  }
+});
+
+SOL_PATTERNS.push({
+  id: "unprotected-fund-recovery",
+  type: "Unprotected Fund Recovery",
+  severity: "CRITICAL",
+  cwe_id: "CWE-284",
+  pattern: /function\s+(recover\w*|rescue\w*|sweep\w*|skim\w*|drain\w*|emergencyWithdraw\w*|withdrawAll\w*|retrieve\w*|claimTokens|withdrawTokens|withdrawETH|withdrawEth)\s*\([^)]*\)[^{;]*\{/g,
+  description: "A rescue/sweep style function can be called by anyone and sends funds to the caller or to a caller-chosen address.",
+  fix: "Restrict the function with onlyOwner or a role, and send funds only to a fixed treasury address.",
+  contextCheck: function (source, idx) {
+    const brace = source.indexOf("{", idx);
+    if (brace < 0) return false;
+    const head = source.slice(idx, brace);
+    if (/\b(internal|private|view|pure)\b/.test(head)) return false;
+    if (/\bonly[A-Za-z]\w*|\bauth\b|requiresAuth|restricted/.test(head)) return false;
+    const b = fnBodyDeep(source, idx, 1);
+    if (!b) return false;
+    if (/\b(require|assert|if)\s*\([^;]*(msg\.sender|_msgSender\s*\(\s*\)|tx\.origin)|_checkOwner|_checkRole|hasRole\s*\(/.test(b)) return false;
+    if (/\[\s*(msg\.sender|_msgSender\s*\(\s*\))\s*\]/.test(b)) return false;
+    const params = ((/\(([^)]*)\)/.exec(head) || [, ""])[1]).split(",").map(function (p) { return (p.trim().split(/\s+/).pop() || ""); }).filter(function (p) { return /^\w+$/.test(p); });
+    const toCaller = /\b(safeTransfer|transfer|send)\s*\(\s*(msg\.sender|_msgSender\s*\(\s*\))/.test(b) ||
+      /payable\s*\(\s*(msg\.sender|_msgSender\s*\(\s*\))\s*\)\s*\.(transfer|send|call)|\bmsg\.sender\s*\.(transfer|send|call)/.test(b);
+    const toParam = params.some(function (p) {
+      return new RegExp("\\b(safeTransfer|transfer|send)\\s*\\(\\s*" + p + "\\b").test(b) ||
+        new RegExp("\\b" + p + "\\s*\\.(transfer|send|call)").test(b) ||
+        new RegExp("payable\\s*\\(\\s*" + p + "\\s*\\)\\s*\\.(transfer|send|call)").test(b);
+    });
+    return toCaller || toParam;
+  }
+});
+
+SOL_PATTERNS.push({
+  id: "stale-oracle-price",
+  type: "Oracle Price Without Staleness Check",
+  severity: "MEDIUM",
+  cwe_id: "CWE-754",
+  pattern: /\blatestRoundData\s*\(\s*\)/g,
+  description: "latestRoundData() is used without checking how fresh the answer is. A stalled or broken feed returns an old price that the protocol will still trust.",
+  fix: "Check updatedAt against a heartbeat (block.timestamp - updatedAt <= maxDelay), require answeredInRound >= roundId, and require price > 0.",
+  contextCheck: function (source, idx) {
+    if (/\bfunction\s+latestRoundData\b/.test(lineAt(source, idx))) return false;
+    const f0 = source.lastIndexOf("function ", idx);
+    if (f0 < 0) return false;
+    const b = fnBody(source, f0);
+    if (!b) return false;
+    if ((b.match(/\bupdatedAt\b/g) || []).length >= 2) return false;
+    if ((b.match(/\banswered\w*\b/gi) || []).length >= 2) return false;
+    if (/heartbeat|stalePeriod|maxDelay|MAX_DELAY|staleness|STALE/i.test(b)) return false;
+    return true;
+  }
+});
+
+SOL_PATTERNS.push({
+  id: "swap-no-slippage",
+  type: "Swap Without Slippage or Deadline Protection",
+  severity: "MEDIUM",
+  cwe_id: "CWE-682",
+  pattern: /\b(swapExactTokensForTokens|swapExactETHForTokens|swapExactTokensForETH|swapExactTokensForTokensSupportingFeeOnTransferTokens|swapExactETHForTokensSupportingFeeOnTransferTokens|swapExactTokensForETHSupportingFeeOnTransferTokens|exactInputSingle|exactInput)\s*\(/g,
+  description: "A swap is sent with a minimum output of 0 or a deadline of block.timestamp. Bots can sandwich it for most of its value, and a validator can hold the transaction.",
+  fix: "Take a real minimum-output and deadline from the caller, or compute minOut from a trusted oracle.",
+  contextCheck: function (source, idx) {
+    const open = source.indexOf("(", idx);
+    if (open < 0) return false;
+    if (/function\s+$/.test(source.slice(Math.max(0, idx - 30), idx))) return false;
+    const name = (/(\w+)\s*\(/.exec(source.slice(idx, open + 1)) || [])[1] || "";
+    const a = _args(source, open);
+    const txt = a.join(",");
+    if (/amountOutMin(imum)?\s*:\s*0\b/.test(txt) || /deadline\s*:\s*(block\.timestamp|now)\b/.test(txt)) return true;
+    if (/^swapExact/.test(name)) {
+      const minI = /ETHFor/.test(name) ? 0 : 1;
+      const mn = (a[minI] || "").trim(), dl = (a[a.length - 1] || "").trim();
+      if (mn === "0") return true;
+      if (/^(block\.timestamp|now|type\s*\(\s*uint256\s*\)\.max)$/.test(dl)) return true;
+    }
+    return false;
+  }
+});
+
+SOL_PATTERNS.push({
+  id: "divide-before-multiply",
+  type: "Division Before Multiplication (Precision Loss)",
+  severity: "MEDIUM",
+  cwe_id: "CWE-682",
+  pattern: /^[^\n]*\/[^\n]*\*[^\n]*$/gm,
+  description: "A division happens before a multiplication. Integer division rounds down, so the result loses precision that the multiplication then amplifies.",
+  fix: "Multiply first and divide last, or use a fixed-point library with enough precision.",
+  contextCheck: function (source, idx) {
+    let L = lineAt(source, idx);
+    if (/^\s*(\*|\/\/|\/\*)/.test(L)) return false;
+    L = L.replace(/\/\/.*$/, "").replace(/\/\*.*?\*\//g, "").replace(/"[^"]*"/g, '""');
+    return /[\w)\]]\s*\/\s*[\w(][\w.\[\]()]*\s*\*\s*[\w(]/.test(L);
+  }
+});
+
+SOL_PATTERNS.push({
+  id: "erc4626-inflation",
+  type: "ERC4626 First-Depositor Inflation Risk",
+  severity: "HIGH",
+  cwe_id: "CWE-682",
+  pattern: /function\s+(deposit|mint|_deposit|convertToShares|_convertToShares|previewDeposit)\s*\([^)]*\)[^{;]*\{/g,
+  description: "Shares are priced as assets * totalSupply / totalAssets with no virtual offset or dead shares. The first depositor can donate assets to inflate the share price and make later depositors' shares round down to zero.",
+  fix: "Use virtual shares/assets (OpenZeppelin _decimalsOffset), mint minimum liquidity to a dead address on first deposit, and require shares > 0.",
+  contextCheck: function (source, idx) {
+    const b = fnBodyDeep(source, idx, 1);
+    if (!b) return false;
+    if (/_decimalsOffset|MINIMUM_LIQUIDITY|minimumLiquidity|DEAD_SHARES|deadShares|virtualShares|virtualAssets|VIRTUAL_|0xdead|_mint\s*\(\s*address\s*\(\s*0\s*\)/i.test(source)) return false;
+    if (/totalSupply(\s*\(\s*\))?\s*\+\s*1|totalAssets(\s*\(\s*\))?\s*\+\s*1/.test(source)) return false;
+    const bal = "(totalAssets|balanceOf\\s*\\(\\s*address\\s*\\(\\s*this\\s*\\)\\s*\\)|totalDeposits|totalPooled)";
+    return new RegExp("\\*[^;]*totalSupply[^;]*\\/[^;]*" + bal + "|\\bassets?\\s*\\*[^;]*\\/[^;]*" + bal, "i").test(b);
+  }
+});
+
 
 /* _precision_v1 */
 /* _precision_v2 */
