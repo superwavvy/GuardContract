@@ -6,6 +6,46 @@ const cache = require("./cache.js");
 
 const bot = new Bot(process.env.TELEGRAM_BOT_TOKEN);
 
+/* _guard_v1 */
+const _hits = new Map();
+let _day = new Date().toISOString().slice(0, 10), _dayCount = 0;
+async function _isMember(ctx) {
+  const gc = process.env.ALLOWED_CHAT_ID;
+  if (!gc) return true;
+  if (ctx.chat && String(ctx.chat.id) === String(gc)) return true;
+  try {
+    const api = ctx.telegram || ctx.api;
+    const m = await api.getChatMember(gc, ctx.from.id);
+    return ["creator", "administrator", "member", "restricted"].indexOf(m.status) >= 0;
+  } catch (e) { return false; }
+}
+async function _guard(ctx, next) {
+  /* _bare_v1 */
+  if (ctx.from && ctx.from.is_bot) return;
+  if (ctx.chat && (ctx.chat.type === "group" || ctx.chat.type === "supergroup") && ctx.message && typeof ctx.message.text === "string" && ctx.message.text.charAt(0) !== "/") {
+    const am = /(?:\b(eth|arb|base|op|polygon|bsc|avax|scroll|linea|blast|mantle|zksync|sepolia)\s+)?(0x[a-fA-F0-9]{40})\b/i.exec(ctx.message.text);
+    if (!am) return;
+    ctx.message.text = (am[1] ? am[1].toLowerCase() + " " : "") + am[2];
+  }
+  const text = (ctx.message && ctx.message.text) || "";
+  if (!ctx.from || !/0x[a-fA-F0-9]{40}/.test(text)) return next();
+  if (String(ctx.from.id) === String(process.env.ADMIN_ID || "")) return next();
+  if (!(await _isMember(ctx))) return ctx.reply("🔒 This bot is limited to members of the group.");
+  const today = new Date().toISOString().slice(0, 10);
+  if (today !== _day) { _day = today; _dayCount = 0; }
+  const cap = +process.env.DAILY_SCAN_CAP || 200;
+  if (_dayCount >= cap) return ctx.reply("⏳ Daily scan limit reached for everyone. Try again tomorrow (UTC).");
+  const per = +process.env.SCANS_PER_HOUR || 8, now = Date.now();
+  const arr = (_hits.get(ctx.from.id) || []).filter(function (t) { return now - t < 3600000; });
+  if (arr.length >= per) {
+    const mins = Math.ceil((3600000 - (now - arr[0])) / 60000);
+    return ctx.reply("⏳ Limit: " + per + " scans per hour each. Try again in about " + mins + " min.");
+  }
+  arr.push(now); _hits.set(ctx.from.id, arr); _dayCount++;
+  return next();
+}
+bot.use(_guard);
+
 // ==================== COMMANDS ====================
 
 bot.command("start", (ctx) => {
