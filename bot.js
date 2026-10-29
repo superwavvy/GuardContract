@@ -212,15 +212,22 @@ function llmStatusLine(s) {
   return parts.length ? parts.join(" · ") : "none";
 }
 function explorerUrl(chain, addr) {
-  var base = {
-    eth: "https://etherscan.io/address/",
-    arbitrum: "https://arbiscan.io/address/",
-    base: "https://basescan.org/address/",
-    polygon: "https://polygonscan.com/address/",
-    optimism: "https://optimistic.etherscan.io/address/"
-  }[chain] || "https://etherscan.io/address/";
-  return base + addr + "#code";
+  var E = {
+    eth: "https://etherscan.io", ethereum: "https://etherscan.io", mainnet: "https://etherscan.io",
+    arb: "https://arbiscan.io", arbitrum: "https://arbiscan.io",
+    base: "https://basescan.org",
+    op: "https://optimistic.etherscan.io", optimism: "https://optimistic.etherscan.io",
+    polygon: "https://polygonscan.com", matic: "https://polygonscan.com",
+    bsc: "https://bscscan.com", bnb: "https://bscscan.com",
+    avax: "https://snowtrace.io", avalanche: "https://snowtrace.io",
+    scroll: "https://scrollscan.com", linea: "https://lineascan.build",
+    blast: "https://blastscan.io", mantle: "https://mantlescan.xyz",
+    zksync: "https://era.zksync.network", sepolia: "https://sepolia.etherscan.io"
+  };
+  var base = E[String(chain).toLowerCase()] || "https://etherscan.io";
+  return base + "/address/" + addr + "#code";
 }
+getExplorerLink = function (chain, address) { return explorerUrl(chain, address).replace(/#code$/, ""); };
 function formatReport(r) {
   if (!r.ok) return "❌ *Scan failed*\n\n" + r.reason;
   var _OZ_LIBS = /^(SafeERC20|SafeCast|SafeMath|SignedSafeMath|SignedMath|Math|Address|Context|Ownable|Ownable2Step|ERC20|IERC20|ERC20Permit|Strings|ReentrancyGuard|Pausable|ECDSA|MessageHashUtils|Counters|StorageSlot|Arrays|Checkpoints)\.sol$/;
