@@ -47,7 +47,7 @@ Each line of code is prefixed with its line number. Use those numbers when repor
 Focus on:
 1. Reentrancy (external calls before state changes)
 2. Integer overflow/underflow — ONLY if compiler <0.8.0, OR operation is inside an unchecked {} block, OR is inline assembly. Do NOT report for >=0.8.0 outside unchecked blocks.
-3. Access control (missing modifiers, tx.origin). DO NOT flag a function if it has an access modifier (onlyOwner, onlyRole, onlyAdmin) OR if it delegates execution to an external library that is documented to handle signatures/authorization.
+3. Access control (missing modifiers, tx.origin). ONLY report this if you can point to the exact line where a critical state variable (like owner, admin, or a role) is modified, AND there is NO access modifier (onlyOwner, onlyRole), NO require(msg.sender...), and NO signature validation. Do NOT flag functions that only call external libraries.
 4. Unchecked external call return values
 5. Front-running / transaction ordering
 6. Oracle manipulation / spot price reliance

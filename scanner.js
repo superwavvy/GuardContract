@@ -145,6 +145,19 @@ if (!file._llmStatuses) file._llmStatuses = {};
     if (process.env.GC_DEBUG_STAGES) {
   console.log("  [STAGE] raw llm: " + llmFindings.length + " @ " + llmFindings.map(function(f){return f.line}).join(","));
 }
+    // Drop LLM Access Control FPs if code has standard guards
+    if (llmFindings.length > 0) {
+      llmFindings = llmFindings.filter(function(f) {
+        if (/access control/i.test(f.type)) {
+          var snippet = file.content.split("\n").slice(Math.max(0, f.line - 10), f.line + 5).join("\n");
+          if (/onlyOwner|onlyRole|onlyAdmin|_checkOwner|_checkRole|hasRole|require\(msg\.sender/i.test(snippet)) {
+            return false; // Drop it
+          }
+        }
+        return true;
+      });
+    }
+
     var merged = mergeAndDedupe(patterns, llmFindings);
 if (process.env.GC_DEBUG_STAGES) {
   console.log("  [STAGE] after merge: " + merged.length + " @ " + merged.map(function(f){return f.line}).join(","));
