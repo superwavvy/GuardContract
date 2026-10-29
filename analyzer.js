@@ -47,7 +47,7 @@ Each line of code is prefixed with its line number. Use those numbers when repor
 Focus on:
 1. Reentrancy (external calls before state changes)
 2. Integer overflow/underflow — ONLY if compiler <0.8.0, OR operation is inside an unchecked {} block, OR is inline assembly. Do NOT report for >=0.8.0 outside unchecked blocks.
-3. Access control (missing modifiers, tx.origin)
+3. Access control (missing modifiers, tx.origin). DO NOT flag a function if it has an access modifier (onlyOwner, onlyRole, onlyAdmin) OR if it delegates execution to an external library that is documented to handle signatures/authorization.
 4. Unchecked external call return values
 5. Front-running / transaction ordering
 6. Oracle manipulation / spot price reliance
@@ -60,6 +60,7 @@ Focus on:
 
 Rules:
 - Report only REAL, SPECIFIC issues with exact line numbers.
+- Access Control Rule: Only report missing access control if you can point to a specific state change (like setting owner, role, or critical config) that is reachable by an unprivileged user WITHOUT any require(msg.sender...), modifier, or external library signature validation.
 - Do not guess.
 - If no issues, return an empty array.
 - Description and fix: 1-2 sentences each.
