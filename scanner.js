@@ -147,14 +147,25 @@ if (!file._llmStatuses) file._llmStatuses = {};
 }
     // Drop LLM Access Control FPs if code has standard guards
     if (llmFindings.length > 0) {
-      llmFindings = llmFindings.filter(function(f) {
+      llmFindings = llmFindings.map(function(f) {
         if (/access control/i.test(f.type)) {
-          var snippet = file.content.split("\n").slice(Math.max(0, f.line - 10), f.line + 5).join("\n");
+          var lines = file.content.split("\n");
+          var snippet = lines.slice(Math.max(0, f.line - 10), f.line + 5).join("\n");
+          
+          // 1. Demote if standard auth is present
           if (/onlyOwner|onlyRole|onlyAdmin|_checkOwner|_checkRole|hasRole|require\(msg\.sender/i.test(snippet)) {
-            return false; // Drop it
+            f.severity = "LOW";
+            f.description = "[Demoted: Standard access control present] " + f.description;
+          }
+          
+          // 2. Demote if it's a library call
+          var body = lines.slice(f.line - 1, f.line + 5).join("\n");
+          if (/^\s*\w+\.\w+\s*\(/m.test(body)) {
+            f.severity = "LOW";
+            f.description = "[Demoted: Delegates to library] " + f.description;
           }
         }
-        return true;
+        return f;
       });
     }
 
