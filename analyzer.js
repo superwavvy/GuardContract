@@ -114,7 +114,6 @@ const MAX_RETRIES = 3;
 
 async function analyzeChunk(numberedText, startLine, path, contract, chain, tier) {
   var MAX_PROMPT_CHARS = 55000;
-  var MAX_RETRIES = 3;
 
   if (numberedText.length > MAX_PROMPT_CHARS) {
     var err = new Error("LLM_SKIPPED_OVERSIZED: " + numberedText.length + " chars > " + MAX_PROMPT_CHARS + " for " + path);
@@ -130,61 +129,108 @@ async function analyzeChunk(numberedText, startLine, path, contract, chain, tier
     numberedText
   );
 
+  // Define providers: Groq first, Cerebras fallback
+  var providers = [
+    {
+      name: "Groq",
+      url: "https://api.groq.com/openai/v1/chat/completions",
+      key: process.env.GROQ_API_KEY,
+      model: "openai/gpt-oss-120b",
+      isGroq: true,
+      maxRetries: 2
+    },
+    {
+      name: "Cerebras",
+      url: "https://api.cerebras.ai/v1/chat/completions",
+      key: process.env.CEREBRAS_API_KEY,
+      model: process.env.CEREBRAS_MODEL || "llama-3.3-70b",
+      isGroq: false,
+      maxRetries: 2
+    }
+  ];
+
   var lastErr = null;
-  for (var attempt = 1; attempt <= MAX_RETRIES; attempt++) {
-    var response;
-    try {
-      response = await _groqFetch("https://api.groq.com/openai/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Authorization": "Bearer " + process.env.GROQ_API_KEY,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model: "openai/gpt-oss-120b",
-        messages: [{ role: "user", content: prompt }],
-        response_format: { type: "json_object" }, max_completion_tokens: 6000, reasoning_effort: "low",
-        temperature: 0,
-      }),
-      });
-    } catch (fetchErr) {
-      fetchErr.message = "fetch: " + fetchErr.message + " | cause: " + (fetchErr.cause && (fetchErr.cause.code || fetchErr.cause.message) || "unknown");
-      throw fetchErr;
-    }
 
-    if (response.ok) {
-      var data = await response.json();
-      if (!data.choices || !data.choices[0]) throw new Error("Malformed LLM response");
-      var parsed = safeParseJSON(data.choices[0].message.content);
-      if (!parsed || !parsed.vulnerabilities) return [];
-      return parsed.vulnerabilities.map(function(v) {
-        return Object.assign({}, v, {
-          file: path,
-          line: (v.line || 0) + startLine - 1,
-          cwe_id: CWE_MAP[v.type] || v.cwe_id || "CWE-UNKNOWN",
+  for (var p = 0; p < providers.length; p++) {
+    var provider = providers[p];
+    if (!provider.key) continue; // Skip if no API key is provided
+
+    for (var attempt = 1; attempt <= provider.maxRetries; attempt++) {
+      var response;
+      try {
+        // Use _groqFetch for Groq (proxy support), standard fetch for Cerebras
+        var fetchFn = provider.isGroq ? _groqFetch : fetch;
+        
+        response = await fetchFn(provider.url, {
+          method: "POST",
+          headers: {
+            "Authorization": "Bearer " + provider.key,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(
+            provider.isGroq 
+            ? {
+                model: provider.model,
+                messages: [{ role: "user", content: prompt }],
+                response_format: { type: "json_object" }, 
+                max_completion_tokens: 6000, 
+                reasoning_effort: "low",
+                temperature: 0,
+              }
+            : {
+                model: provider.model,
+                messages: [{ role: "user", content: prompt }],
+                response_format: { type: "json_object" }, 
+                max_tokens: 6000,
+                temperature: 0,
+              }
+          ),
         });
-      });
+      } catch (fetchErr) {
+        lastErr = fetchErr;
+        break; // Break to next provider on network error
+      }
+
+      if (response.ok) {
+        var data = await response.json();
+        if (!data.choices || !data.choices[0]) { lastErr = new Error("Malformed LLM response"); break; }
+        var parsed = safeParseJSON(data.choices[0].message.content);
+        if (!parsed || !parsed.vulnerabilities) return [];
+        return parsed.vulnerabilities.map(function(v) {
+          return Object.assign({}, v, {
+            file: path,
+            line: (v.line || 0) + startLine - 1,
+            cwe_id: CWE_MAP[v.type] || v.cwe_id || "CWE-UNKNOWN",
+          });
+        });
+      }
+
+      var bodyText = "";
+      try { bodyText = await response.text(); } catch (e) { bodyText = ""; }
+      lastErr = new Error(provider.name + " API error: " + response.status + " - " + bodyText.slice(0, 400));
+
+      if (response.status === 413) {
+        lastErr.code = "LLM_SKIPPED_OVERSIZED";
+        throw lastErr;
+      }
+
+      if (response.status === 429) {
+        if (attempt < provider.maxRetries) {
+          var ra = parseInt(response.headers.get("retry-after") || "5", 10);
+          console.warn("[" + provider.name + "] 429 on " + path + ", retry in " + ra + "s (" + attempt + "/" + provider.maxRetries + ")");
+          await new Promise(function(r) { setTimeout(r, ra * 1000); });
+          continue;
+        } else {
+          console.warn("[" + provider.name + "] 429 exhausted for " + path + ". Falling back...");
+          break; // Move to the next provider
+        }
+      }
+
+      break; // Break to next provider on other errors (e.g. 500)
     }
-
-    var bodyText = "";
-    try { bodyText = await response.text(); } catch (e) { bodyText = ""; }
-    lastErr = new Error("Groq API error: " + response.status + " - " + bodyText.slice(0, 400));
-
-    if (response.status === 413) {
-      lastErr.code = "LLM_SKIPPED_OVERSIZED";
-      throw lastErr;
-    }
-
-    if (response.status === 429 && attempt < MAX_RETRIES) {
-      var ra = parseInt(response.headers.get("retry-after") || "10", 10);
-      console.warn("[analyzer] 429 on " + path + ", retry in " + ra + "s (" + attempt + "/" + MAX_RETRIES + ")");
-      await new Promise(function(r) { setTimeout(r, ra * 1000); });
-      continue;
-    }
-
-    throw lastErr;
   }
-  throw lastErr;
+
+  throw lastErr || new Error("All LLM providers failed");
 }
 
 async function classifyScope(findings, scopeText) {
