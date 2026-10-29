@@ -112,6 +112,19 @@ function safeParseJSON(rawText) {
 const MAX_PROMPT_CHARS = 60000; // ~15K tokens, safely under gpt-oss-120b limits
 const MAX_RETRIES = 3;
 
+async function fetchWithTimeout(url, options, timeoutMs = 30000) {
+  const controller = new AbortController();
+  const id = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, { ...options, signal: controller.signal });
+    clearTimeout(id);
+    return response;
+  } catch (e) {
+    clearTimeout(id);
+    throw e;
+  }
+}
+
 async function analyzeChunk(numberedText, startLine, path, contract, chain, tier) {
   var MAX_PROMPT_CHARS = 55000;
 
@@ -159,9 +172,9 @@ async function analyzeChunk(numberedText, startLine, path, contract, chain, tier
       var response;
       try {
         // Use _groqFetch for Groq (proxy support), standard fetch for Cerebras
-        var fetchFn = provider.isGroq ? _groqFetch : fetch;
+        var fetchFn = provider.isGroq ? _groqFetch : fetch; // Use _groqFetch for Groq, standard fetch for Cerebras
         
-        response = await fetchFn(provider.url, {
+        response = await (provider.isGroq ? fetchFn : fetchWithTimeout)(provider.url, {
           method: "POST",
           headers: {
             "Authorization": "Bearer " + provider.key,

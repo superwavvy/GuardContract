@@ -75,6 +75,15 @@ function findExternalEntry(source, targetFnName, visited, depth) {
 
 function classifyCaller(fnHeader, fnBody, source) {
   var result = { gated: false, reason: null, signature: fnHeader.trim().slice(0, 150) };
+  
+  // NEW: Detect if the source is a library
+  if (/(^|\n)\s*library\s+\w+/.test(source)) {
+    result.gated = true;
+    result.reason = "Library function (not directly callable)";
+    return result;
+  }
+
+  var result = { gated: false, reason: null, signature: fnHeader.trim().slice(0, 150) };
 
   var sigText = fnHeader;
   if (fnBody) {

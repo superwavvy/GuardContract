@@ -619,6 +619,8 @@ SOL_PATTERNS.push({
   description: "A public function assigns an owner/admin-style role with no caller check, so anyone can take control of the contract.",
   fix: "Add an access modifier (onlyOwner or role-based) or require() that msg.sender is the current owner before changing roles.",
   contextCheck: function (source, idx) {
+    if (/(^|\n)\s*library\s+\w+/.test(source)) return false; // Ignore libraries
+
     const brace = source.indexOf("{", idx);
     if (brace < 0) return false;
     const head = source.slice(idx, brace);
