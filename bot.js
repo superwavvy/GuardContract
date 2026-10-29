@@ -261,7 +261,8 @@ function formatReport(r) {
 
   let out = "🛡️ *GuardContract Pre-Screen*\n";
   out += DIV + "\n";
-  out += "📄 `" + r.contractName + "`" + (r.address ? "  [↗ Explorer](" + explorerUrl(r.chain, r.address) + ")" : "") + "\n";
+  out += "📄 `" + r.contractName + "`" + (r.address ? "  [↗ Explorer](" + explorerUrl(r.chain, r.implAddress || r.address) + ")" : "") + "\n";
+  if (r.implAddress) out += "🔀 _Proxy → implementation_ `" + String(r.implAddress).slice(0, 8) + "…" + String(r.implAddress).slice(-4) + "`" + (r.implUnverified ? " ⚠️ _implementation unverified, scanned proxy only_" : "") + "\n";
   out += DIV + "\n\n";
 
   out += "*🌐 Network*     `" + (CHAIN_NAMES[r.chain] || r.chain) + "`";
@@ -305,7 +306,7 @@ function formatReport(r) {
         const tag = callerTag(f);
         out += branch + " `" + f.type + "`" + scopeTag + "\n";
         const _ref = shortFile.replace(/_/g, "\\_") + ":" + f.line;
-        out += (isLast ? " " : "│") + "  ├ " + (r.address ? "[" + _ref + "](" + explorerUrl(r.chain, r.address) + ")" : _ref);
+        out += (isLast ? " " : "│") + "  ├ " + (r.address ? "[" + _ref + "](" + explorerUrl(r.chain, r.implAddress || r.address) + ")" : _ref);
         if (f.corroborated) out += " _· corroborated_";
         out += "\n";
         if (tag) {

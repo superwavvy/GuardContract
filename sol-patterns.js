@@ -798,6 +798,146 @@ function runPatterns(source, filePath, tier) {
   return findings;
 }
 
+
+/* _detectors_v4 */
+var _bs = null, _bo = null;
+function _blank(src) {
+  if (_bs === src) return _bo;
+  _bs = src;
+  _bo = src.replace(/\/\*[\s\S]*?\*\/|\/\/[^\n]*/g, function (m) { return m.replace(/[^\n]/g, " "); });
+  return _bo;
+}
+function _fnStart(clean, idx) {
+  const re = /\bfunction\s+\w*\s*\(/g;
+  let m, last = -1;
+  while ((m = re.exec(clean)) && m.index < idx) last = m.index;
+  return last;
+}
+function _contractText(clean, idx) {
+  const re = /^[ \t]*(?:abstract\s+)?(?:contract|library)\s+\w+[^{]*\{/gm;
+  let m, last = null;
+  while ((m = re.exec(clean)) && m.index < idx) last = m;
+  if (!last) return "";
+  const open = last.index + last[0].length - 1;
+  let d = 0;
+  for (let i = open; i < clean.length; i++) {
+    if (clean[i] === "{") d++;
+    else if (clean[i] === "}" && --d === 0) return clean.slice(open, i + 1);
+  }
+  return clean.slice(open);
+}
+function _upd(id, fields) {
+  const r = SOL_PATTERNS.find(function (x) { return x.id === id; });
+  if (r) Object.assign(r, fields);
+}
+var _MEANINGLESS_DEADLINE = /^(block\.timestamp(\s*\+\s*[\w.]+)?|now(\s*\+\s*[\w.]+)?|type\s*\(\s*uint(256)?\s*\)\s*\.\s*max|uint(256)?\s*\(\s*-\s*1\s*\)|2\s*\*\*\s*256\s*-\s*1|UINT(256)?_MAX|MAX_UINT(256)?)$/;
+function _isZeroish(txt, scope) {
+  txt = (txt || "").trim();
+  if (/^(0|1|0x0+)$/.test(txt)) return true;
+  if (/^\w+$/.test(txt)) {
+    const m = new RegExp("\\b" + txt + "\\s*=\\s*(0|1)\\s*;").exec(scope || "");
+    if (m) return true;
+  }
+  return false;
+}
+
+_upd("stale-oracle-price", {
+  contextCheck: function (source, idx) {
+    const c = _blank(source);
+    if (/\bfunction\s+$/.test(c.slice(Math.max(0, idx - 20), idx))) return false;
+    const f0 = _fnStart(c, idx);
+    if (f0 < 0) return false;
+    const b = fnBody(c, f0);
+    if (!b) return false;
+    if ((b.match(/\bupdatedAt\b/g) || []).length >= 2) return false;
+    if ((b.match(/\banswered\w*\b/gi) || []).length >= 2) return false;
+    if (/heartbeat|stalePeriod|maxDelay|MAX_DELAY|staleness|stale|STALE/i.test(b)) return false;
+    return true;
+  }
+});
+
+_upd("swap-no-slippage", {
+  contextCheck: function (source, idx) {
+    const c = _blank(source);
+    const open = c.indexOf("(", idx);
+    if (open < 0) return false;
+    if (/function\s+$/.test(c.slice(Math.max(0, idx - 30), idx))) return false;
+    const name = (/(\w+)\s*\(/.exec(c.slice(idx, open + 1)) || [])[1] || "";
+    const a = _args(c, open);
+    const f0 = _fnStart(c, idx);
+    const scope = f0 >= 0 ? fnBody(c, f0) : "";
+    const txt = a.join(",");
+    if (/amountOutMin(imum)?\s*:\s*(0|1)\b/.test(txt)) return true;
+    const dm = /deadline\s*:\s*([^,}]+)/.exec(txt);
+    if (dm && _MEANINGLESS_DEADLINE.test(dm[1].trim())) return true;
+    if (/^swapExact/.test(name)) {
+      const minI = /ETHFor/.test(name) ? 0 : 1;
+      const mn = (a[minI] || "").trim(), dl = (a[a.length - 1] || "").trim();
+      if (_isZeroish(mn, scope)) return true;
+      if (_MEANINGLESS_DEADLINE.test(dl)) return true;
+      if (/^\w+$/.test(dl)) {
+        const m = new RegExp("\\b" + dl + "\\s*=\\s*([^;]+);").exec(scope);
+        if (m && _MEANINGLESS_DEADLINE.test(m[1].trim())) return true;
+      }
+    }
+    return false;
+  }
+});
+
+SOL_PATTERNS.push({
+  id: "rescue-no-token-exclusion",
+  type: "Rescue Function Can Sweep Protocol Tokens",
+  severity: "MEDIUM",
+  cwe_id: "CWE-284",
+  pattern: /function\s+(recover\w*|rescue\w*|sweep\w*|salvage\w*|retrieve\w*|emergencyWithdraw\w*|withdrawStuck\w*)\s*\([^)]*\)[^{;]*\{/g,
+  description: "A rescue/recover function transfers any token the caller names, with no check that the token is not one the contract is supposed to hold (reward, staking or underlying token). The owner, or anyone if access control is missing, can drain user or reward funds.",
+  fix: "Revert when tokenAddress equals any protocol-held token (rewards, staking, underlying), or restrict rescue to unsupported tokens only.",
+  contextCheck: function (source, idx) {
+    const c = _blank(source);
+    const brace = c.indexOf("{", idx);
+    if (brace < 0) return false;
+    const head = c.slice(idx, brace);
+    if (/\b(internal|private|view|pure)\b/.test(head)) return false;
+    const b = fnBody(c, idx);
+    if (!b) return false;
+    const pm = /address(?:\s+payable)?\s+(\w+)/.exec(head);
+    if (!pm) return false;
+    const t = pm[1];
+    const sends = new RegExp("\\(\\s*" + t + "\\s*\\)\\s*\\.\\s*(safeTransfer|transfer)\\s*\\(|\\b" + t + "\\s*\\.\\s*(safeTransfer|transfer)\\s*\\(|(safeTransfer|transfer)\\s*\\(\\s*" + t + "\\b").test(b);
+    if (!sends) return false;
+    if (new RegExp("\\b" + t + "\\s*(!=|==)|(!=|==)\\s*(address\\s*\\(\\s*)?\\w*\\s*\\)?\\s*" + t + "\\b").test(b)) return false;
+    const ct = _contractText(c, idx);
+    return /\bIERC20\w*\s+(public|internal|private|immutable|constant)|\baddress\s+(public|internal|private|immutable)\s+\w*(token|Token)\w*/.test(ct);
+  }
+});
+
+SOL_PATTERNS.push({
+  id: "nft-hook-reentrancy",
+  type: "Reentrancy via Safe-Mint / Safe-Transfer Hook",
+  severity: "MEDIUM",
+  cwe_id: "CWE-841",
+  pattern: /\b_safeMint\s*\(|\.\s*safe(Batch)?TransferFrom\s*\(/g,
+  description: "A function calls _safeMint or an NFT safeTransferFrom, which hands control to the receiver's onERC721Received/onERC1155Received hook, while a limit check happens before it or state is written after it. A contract receiver can re-enter and bypass the limit or break the accounting.",
+  fix: "Follow checks-effects-interactions (update state before the safe call), add nonReentrant, or use _mint when a receiver hook is not needed.",
+  contextCheck: function (source, idx) {
+    const c = _blank(source);
+    if (/\.\s*safe(Batch)?TransferFrom/.test(c.slice(idx, idx + 30)) && !/721|1155|nft/i.test(c.slice(Math.max(0, idx - 60), idx))) return false;
+    const f0 = _fnStart(c, idx);
+    if (f0 < 0) return false;
+    const open = c.indexOf("{", f0);
+    if (open < 0) return false;
+    const head = c.slice(f0, open);
+    if (/\b(internal|private|view|pure)\b/.test(head)) return false;
+    if (/\b(nonReentrant|noReentrant|lock|nonreentrant)\b/i.test(head)) return false;
+    const b = fnBody(c, f0);
+    if (!b) return false;
+    const before = c.slice(open, idx), after = c.slice(idx, open + b.length);
+    const limitCheck = /\b(require|assert|if)\s*\([^;]*(balanceOf|totalSupply|minted|claimed|mintedBy|\w+\s*\[)/.test(before);
+    const writeAfter = /\b\w+\s*\[[^\]]*\]\s*([-+*]?=)(?!=)|\bdelete\s+\w+\s*\[/.test(after);
+    return limitCheck || writeAfter;
+  }
+});
+
 module.exports = {
   SOL_PATTERNS: SOL_PATTERNS,
   runPatterns: runPatterns,
