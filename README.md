@@ -1,76 +1,98 @@
 # GuardContract
 
-A Telegram-based Solidity vulnerability scanner. Send a contract address, get a report of code-level vulnerabilities in return.
-
-**Built for security researchers doing first-pass triage on verified contracts.**
-
----
+A Telegram-based Solidity vulnerability scanner. Send a contract address, get a report of code-level vulnerabilities in return. Built for security researchers doing first-pass triage on verified contracts.
 
 ## What It Does
 
-1. You send a contract address to the Telegram bot
-2. It fetches the verified source via Etherscan V2 (16 chains supported)
-3. Runs a deterministic pattern engine + LLM analysis
-4. Returns a report with findings, severity, and file:line references
+1. You send a contract address to the Telegram bot.
+2. It fetches the verified source via Etherscan V2 (16 chains supported).
+3. If the address is a proxy (EIP-1967, Transparent, or Beacon), it automatically resolves and scans the underlying implementation contract.
+4. Runs a deterministic pattern engine plus an LLM analysis layer.
+5. Returns a report with findings, severity, CWE IDs, and file:line references.
 
 No UI. No signup. No API keys exposed to users.
 
 ## Architecture
 
-```
 Telegram message
-    ↓
-etherscan.js       → fetch verified source (multi-chain)
-    ↓
-sol-version.js     → parse pragma, determine ruleset tier
-    ↓
-sol-patterns.js    → 19 pattern rules (context-aware, deterministic)
-    ↓
-analyzer.js        → LLM layer (Groq) + CWE normalization
-    ↓
+↓
+etherscan.js → fetch verified source (multi-chain, proxy resolution)
+↓
+sol-version.js → parse pragma, determine ruleset tier
+↓
+sol-patterns.js → 23+ pattern rules (context-aware, deterministic)
+↓
+analyzer.js → LLM layer (Cerebras/Groq) + CWE normalization
+↓
 guardscan-patch.js → verification (snippet-line match, two-tier)
-    ↓
+↓
 caller-analyzer.js → call-chain aware classification
-    ↓
-scanner.js         → merge, family dedupe, cap-per-family
-    ↓
-cache.js           → write report (24h TTL)
-    ↓
+↓
+scanner.js → merge, family dedupe, cap-per-family
+↓
+cache.js → write report (24h TTL)
+↓
 Telegram reply
-```
+
+## Proxy Resolution
+
+Modern DeFi protocols use upgradeable proxy patterns (Diamonds, Transparent Proxies). Scanning the proxy shell yields nothing, because the logic lives in a separate implementation contract. GuardContract automatically detects the proxy type and fetches the implementation source before scanning.
+
+- Checks Etherscan's `Implementation` field.
+- Reads EIP-1967 and OZ legacy storage slots directly via RPC.
+- Verifies the resolved implementation is a valid contract.
 
 ## Detection Rules
 
 | Rule | CWE | Severity |
-|:---|:---|:---|
+|---|---|---|
 | `arbitrary-call-user-calldata` | CWE-829 | CRITICAL |
 | `trust-msg-sender-selfreport` | CWE-807 | CRITICAL |
-| `tx-origin-auth` | CWE-477 | HIGH |
+| `governance-flash-loan-vote` | CWE-362 | CRITICAL |
 | `selfdestruct` | CWE-284 | CRITICAL |
+| `tx-origin-auth` | CWE-477 | HIGH |
 | `delegatecall` | CWE-829 | HIGH |
 | `unchecked-math-pre-08` | CWE-190 | HIGH |
-| `legacy-call-value` | CWE-841 | MEDIUM |
 | `unchecked-low-level-call` | CWE-252 | HIGH |
-| `transfer-return-ignored` | CWE-252 | MEDIUM |
 | `signature-replay` | CWE-294 | HIGH |
+| `timestamp-randomness` | CWE-330 | HIGH |
+| `owner-mint` | CWE-269 | HIGH |
+| `governance-short-timelock` | CWE-662 | HIGH |
+| `rescue-no-token-exclusion` | CWE-284 | MEDIUM |
+| `nft-hook-reentrancy` | CWE-841 | MEDIUM |
+| `legacy-call-value` | CWE-841 | MEDIUM |
+| `transfer-return-ignored` | CWE-252 | MEDIUM |
 | `unbounded-loop` | CWE-834 | MEDIUM |
 | `encodePacked-collision` | CWE-328 | MEDIUM |
-| `timestamp-randomness` | CWE-330 | HIGH |
 | `blockhash-randomness` | CWE-330 | MEDIUM |
-| `owner-mint` | CWE-269 | HIGH |
 | `owner-pause` | CWE-269 | MEDIUM |
+| `stale-oracle-price` | CWE-829 | MEDIUM |
+| `swap-no-slippage` | CWE-440 | MEDIUM |
 | `hardcoded-address` | CWE-798 | LOW |
-| `governance-flash-loan-vote` | CWE-362 | HIGH |
-| `governance-short-timelock` | CWE-662 | MEDIUM |
 
-Each rule has a **`contextCheck`** that suppresses false positives. Example: `unchecked-low-level-call` doesn't fire if a `require(...)` or `if (success)` follows the call within 5 lines.
+Each rule has a `contextCheck` that suppresses false positives. For example, `unchecked-low-level-call` does not fire if a `require(...)` or `if (success)` follows the call within 5 lines. `swap-no-slippage` only fires if `amountOutMin` is zero or the deadline is meaningless (`block.timestamp` or `type(uint256).max`).
 
-## Tuning corpus (not a benchmark)
+## LLM Fallback (Cerebras + Groq)
 
-Every rule was tuned against **real contracts**, not synthetic examples. 8 contracts scanned; each produced a fix.
+The LLM layer uses a multi-provider fallback strategy. It tries Groq first. If Groq returns a `429 Rate Limit`, it instantly falls back to Cerebras. Both providers serve `gpt-oss-120b`, which is the primary model. This ensures the scanner never stalls waiting for a rate limit to reset.
+
+- **Primary:** Cerebras (`gpt-oss-120b`, extremely fast inference)
+- **Fallback:** Groq (`openai/gpt-oss-120b`)
+
+## Real-World Validation
+
+GuardContract was tested against the **X100 protocol exploit** (October 2026, ~$4.75M loss). The bot correctly identified the exact attack vectors:
+
+- **Flash-Loan Governance Capture:** Flagged `applyForSenate` and vote logic because membership was read from live stake instead of a snapshot.
+- **Arbitrary External Call:** Flagged `Senate.sol:175` where a proposal could execute an arbitrary `v3Swap` call.
+- **Short Timelock:** Flagged `execute()` because there was no voting-end check or timelock.
+
+## Tuning Corpus (not a benchmark)
+
+Every rule was tuned against real contracts, not synthetic examples. 8 contracts scanned; each produced a fix.
 
 | Contract | Initial Findings | After Tuning | Real Bugs |
-|:---|:---|:---|:---|
+|---|---|---|---|
 | EthPrime | 22 | 3 | 2-3 |
 | Exchange | 5 | 0 | 0 |
 | Token | 2 | 1 | 0 |
@@ -80,87 +102,35 @@ Every rule was tuned against **real contracts**, not synthetic examples. 8 contr
 | FlashLoopAdapter | 5 | 3 (2 CRIT) | **3 (matches real $305K exploit)** |
 | Sepolia test | — | 1 (CRIT) | Regression test |
 
-_These contracts were used to tune rules, so any precision figure here is in-sample. Holdout results in [BENCHMARK.md](BENCHMARK.md)._
-
-**On this tuning corpus (in-sample) precision improved from ~25% to ~66%.** This is a small hand-picked set, not a benchmark — see [BENCHMARK.md](BENCHMARK.md) for holdout results on SmartBugs Curated.
-
-## Design Principles
-
-1. **Pattern layer is deterministic.** Same input → same output. No variance.
-2. **Context checks matter more than patterns.** A regex matching `.call(` is useless. A regex matching `.call(` *and* verifying no `require` follows is useful.
-3. **Self-griefing is not DoS.** If the caller provides the array, the caller pays the gas. Suppress.
-4. **Only audit project code.** Skip `node_modules/`, `@openzeppelin/`, libraries — Trail of Bits already audited those.
-5. **LLM findings are hypotheses.** Pattern findings are facts. Tag both.
-6. **Fail-safe, not fail-open.** If the scan can't complete, say so. Never report "clean" on a failed scan.
+These contracts were used to tune rules, so any precision figure here is in-sample. Holdout results in [BENCHMARK.md](BENCHMARK.md).
 
 ## Setup
 
-```bash
-git clone git@github.com:superwavvy/Guard-Contract.git
-# or, if you don't use SSH:
-git clone https://github.com/superwavvy/Guard-Contract.git
-cd Guard-Contract
-npm install
-```
-
-Create `.env`:
-
-```env
-ETHERSCAN_KEY=your_etherscan_v2_key
-GROQ_API_KEY=gsk_...
-TELEGRAM_BOT_TOKEN=...
-```
-
-Run:
-
-```bash
-node bot.js
-```
-
-## Telegram Commands
-
-```
-/start                        # help
-/scope <text>                 # set bounty scope for IN/OUT labeling
-/scopeoff                     # clear scope
-/cache                        # cache stats
-/clear 0x...                  # invalidate a cached report
-/full 0x...                   # full findings list
-```
-
-Send an address (EVM, auto-detects chain):
-
-```
-0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D
-```
-
-Or force a chain:
-
-```
-arb 0x82aF49447D8a07e3bd95BD0d56f35241523fBab1
-```
-
-## Supported Chains
-
-16 chains via Etherscan V2: Ethereum, Arbitrum, Base, Optimism, Polygon, BSC, Avalanche, Fantom, Gnosis, Celo, Scroll, Linea, Blast, Mantle, zkSync, Sepolia.
+1. Clone the repository.
+   ```bash
+   git clone git@github.com:superwavvy/Guard-Contract.git
+   cd Guard-Contract
+   ```
+2. Install dependencies.
+   ```bash
+   npm install
+   ```
+3. Configure environment variables (`.env`).
+   ```env
+   TELEGRAM_BOT_TOKEN=...
+   ETHERSCAN_API_KEY=...
+   CEREBRAS_API_KEY=...
+   CEREBRAS_MODEL=gpt-oss-120b
+   # Optional fallback
+   GROQ_API_KEY=...
+   ```
+4. Run the bot.
+   ```bash
+   node bot.js
+   ```
 
 ## Limitations
 
-- **Verified source only.** Unverified contracts can't be scanned (no source to read).
-- **No deployment-state analysis.** Can't detect misconfigurations like `authority=0x0` that need runtime storage reads.
-- **No semantic reasoning.** Can't catch V4 hook accounting bugs or protocol-specific state machine exploits.
-- **LLM non-determinism.** ±2 finding variance between runs.
-- **No PoC generation.** Produces findings, not executable exploits.
-
-## What It Doesn't Do
-
-- Replace an auditor
-- Catch semantic/protocol-specific bugs
-- Detect deployment misconfigurations
-- Handle unverified contracts
-
-**It's a triage accelerator.** Not a bug-bounty autopilot, not an audit replacement. It gets you from "should I look at this contract?" to "here are 3 things worth manually verifying" in under a minute.
-
-## License
-
-MIT
+- **Zero-days:** The engine catches known patterns and LLM-detected logic flaws. It cannot find true zero-day vulnerabilities that require deep protocol-specific context.
+- **Simulation:** The LLM layer is non-deterministic. Findings should be manually verified before submission.
+- **Proxy edge cases:** Custom proxy patterns (non-EIP-1967) may not resolve automatically.
