@@ -1,9 +1,12 @@
-node_modules/
+*.backup
+*.bak*
+*.log
 .env
-*.log
-dev/
-*.log
+.env.*
 BENCHMARK-results.md
 a.txt
 b.txt
+dev/
+node_modules/
 patch-*.js
+repo-report.txt
