@@ -19,7 +19,7 @@ Recall = labelled vulnerabilities that have a finding nearby. Line window = with
 | other | 1/3 | 1/3 | 1/3 |
 | unmatched findings | 245/470 | 212/470 | 462/702 |
 
-The front-running rule exists but is disabled by default, so 0/7 is a config choice, not a detection result.
+There is no front-running rule in the scanner, so 0/7 means no detector exists.
 
 ## LLM column
 Pending. Non-determinism observed at temperature 0: same file gives different findings on repeat runs. Will report ranges over 3 runs.
@@ -35,3 +35,8 @@ Pending. Non-determinism observed at temperature 0: same file gives different fi
 
 ## Fixes after the first run
 First pass scored arithmetic 0/23. Causes, both mine: the overflow rule skipped any file mentioning SafeMath, and the harness never passed a compiler tier. Both fixed after seeing results; see commit history.
+
+## Rule versions
+- bench-v1 (commit a6713a4): the rules that produced the tables above.
+- bench-v2 (current): later detectors and fixes (flash-loan governance, proxy resolution, ERC4626, stale oracle, slippage, library false-positive suppression), made while scanning real protocols (X100, USDfr ReserveManager), not from SmartBugs results. Same SmartBugs run, patterns only: access_control 9/21 -> 17/21; reentrancy, arithmetic, unchecked calls, bad_randomness unchanged; unmatched 245/470 -> 236/467.
+- LLM layer: Cerebras gpt-oss-120b with the prompt at bench-v2. The prompt was tuned on USDfr, not SmartBugs.
