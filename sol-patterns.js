@@ -752,7 +752,6 @@ function runPatterns(source, filePath, tier) {
   for (var i = 0; i < SOL_PATTERNS.length; i++) {
     var rule = SOL_PATTERNS[i];
 
-    if (rule.id === "front-running") continue;
     if (rule.precondition && !rule.precondition(source, tier)) continue;
 
     var regex = new RegExp(rule.pattern.source, rule.pattern.flags);
