@@ -21,8 +21,49 @@ Recall = labelled vulnerabilities that have a finding nearby. Line window = with
 
 There is no front-running rule in the scanner, so 0/7 means no detector exists.
 
-## LLM column
-Pending. Non-determinism observed at temperature 0: same file gives different findings on repeat runs. Will report ranges over 3 runs.
+## LLM column (Cerebras gpt-oss-120b, comments stripped, 2 runs)
+Setups: patterns = rules only (bench-v2), llm = LLM only, both = union of the two. Cells show min-max over 2 runs. At temperature 0 the LLM varied little between runs: only reentrancy and the total finding counts changed.
+
+Overall recall, line window, 207 labels: patterns 165 (80%), llm 161-162 (78%), both 179-180 (86-87%). The layers miss different bugs, so combining them adds about 15-18 labels over either alone. This is machine recall on short legacy teaching contracts, not the end-to-end chain with a human reviewer.
+
+### Line window (within 3 lines of the label)
+| Category | patterns | llm | both |
+|---|---|---|---|
+| access_control | 17/21 | 15/21 | 19/21 |
+| arithmetic | 22/23 | 23/23 | 23/23 |
+| bad_randomness | 15/31 | 12/31 | 19/31 |
+| denial_of_service | 5/7 | 5/7 | 5/7 |
+| front_running | 0/7 | 0/7 | 0/7 |
+| other | 1/3 | 1/3 | 1/3 |
+| reentrancy | 30/32 | 30-31/32 | 30-31/32 |
+| short_addresses | 1/1 | 1/1 | 1/1 |
+| time_manipulation | 2/7 | 6/7 | 6/7 |
+| unchecked_low_level_calls | 72/75 | 68/75 | 75/75 |
+| unmatched / total findings | 236/467 | 187-201/398-409 | 423-437/865-876 |
+
+### Line window or same function
+| Category | patterns | llm | both |
+|---|---|---|---|
+| access_control | 17/21 | 15/21 | 19/21 |
+| arithmetic | 22/23 | 23/23 | 23/23 |
+| bad_randomness | 22/31 | 17/31 | 29/31 |
+| denial_of_service | 5/7 | 5/7 | 5/7 |
+| front_running | 0/7 | 1/7 | 1/7 |
+| other | 1/3 | 1/3 | 1/3 |
+| reentrancy | 30/32 | 30-32/32 | 30-32/32 |
+| short_addresses | 1/1 | 1/1 | 1/1 |
+| time_manipulation | 3/7 | 6/7 | 6/7 |
+| unchecked_low_level_calls | 74/75 | 69/75 | 75/75 |
+| unmatched / total findings | 211/467 | 158-171/398-409 | 369-382/865-876 |
+
+### Label leakage
+SmartBugs files carry the answer key in comments (for example the REENTRANCY report marker and the vulnerable_at_lines header), and some comments explain the bug. A first run that sent files to the LLM unmodified scored llm-only 181/207 (front_running 7/7). With all comments stripped it scores 161-162/207 (front_running 0/7). Every LLM number above uses stripped comments; patterns are computed on the original source. The first-run tables are kept as BENCHMARK-llm-leaky-line.md and BENCHMARK-llm-leaky-fn.md.
+
+### Known gaps
+- No front-running detector: 0/7 for every setup.
+- Cross-function reentrancy needs call-path matching (see reentrancy_bonus.sol note above).
+- Roughly half of the combined findings are unmatched (423-437 of 865-876). That is the review load for the human. Precision of the LLM layer was not hand-checked; the earlier 20-finding triage covers patterns only.
+- 2 runs, not 3. LLM prompt was tuned on USDfr, not SmartBugs. SmartBugs is public, so the model may have seen it in training.
 
 ## Caveats
 1. Matching is lenient (3-line window; function mode is more lenient still).

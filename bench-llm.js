@@ -1,6 +1,9 @@
 // bench-llm.js: LLM column for the SmartBugs benchmark.
 // Calls the LLM ONCE per contract per run, then derives three setups from it:
 //   patterns (rules only), llm (LLM only), both (rules + LLM).
+// Comments are STRIPPED before the LLM sees a contract: SmartBugs files contain the
+// answer key in comments (e.g. '<yes> <report> REENTRANCY', '@vulnerable_at_lines').
+// Line numbers are preserved so scoring still lines up.
 // Usage: node bench-llm.js ~/smartbugs-curated --limit 10 --runs 1
 // Flags: --limit N  --runs N (default 3)  --fn (also match by same function)
 //        --sleep ms (pause between calls)  --cache file (default llm-cache.json)
@@ -16,6 +19,13 @@ if (!root || root.startsWith('--')) {
 const RUNS = +arg('runs', 3), LIMIT = +arg('limit', Infinity), SLEEP = +arg('sleep', 0);
 const FN = process.argv.includes('--fn'), CACHE = arg('cache', 'llm-cache.json'), TOL = 3;
 const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+// Remove all comments but keep every newline, so line numbers do not move.
+function stripComments(src) {
+  return src
+    .replace(/\/\*[\s\S]*?\*\//g, m => m.replace(/[^\n]/g, ''))
+    .replace(/\/\/[^\n]*/g, '');
+}
 
 function fnRanges(src) {
   const out = [], re = /\b(function|modifier|constructor)\b[^{;]*\{/g; let m;
@@ -54,7 +64,7 @@ async function llmWithRetry(src) {
       process.stdout.write('\rrun ' + r + '/' + RUNS + '  contract ' + (i + 1) + '/' + entries.length + '   ');
       if (cache[key]) continue;
       try {
-        cache[key] = await llmWithRetry(readSrc(e));
+        cache[key] = await llmWithRetry(stripComments(readSrc(e)));
         fs.writeFileSync(CACHE, JSON.stringify(cache));
       } catch (err) { console.error('\nFAILED run ' + r + ' ' + e.name + ': ' + err.message); }
       if (SLEEP) await sleep(SLEEP);
@@ -69,7 +79,7 @@ async function llmWithRetry(src) {
   for (const c of cfgs) acc[c] = Array.from({ length: RUNS }, () => ({ cats: {}, extra: 0, total: 0 }));
 
   for (const e of complete) {
-    const src = readSrc(e), R = fnRanges(src), P = A.patternScan(src);
+    const raw = readSrc(e), R = fnRanges(stripComments(raw)), P = A.patternScan(raw);
     const ann = e.vulnerabilities.flatMap(v => v.lines);
     for (let r = 1; r <= RUNS; r++) {
       const L = cache[r + '|' + e.path];
