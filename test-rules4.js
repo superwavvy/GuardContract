@@ -30,3 +30,5 @@ for (const [name, src, type, want] of cases) {
   console.log((got === want ? "PASS " : "FAIL ") + name);
 }
 console.log(bad ? bad + " failing" : "all passing");
+
+process.exit(bad ? 1 : 0);

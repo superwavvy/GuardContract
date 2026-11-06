@@ -14,3 +14,5 @@ for (const [f, rule, line] of want) {
   console.log((ok ? "PASS " : "FAIL ") + f + " -> " + (got.join(",") || "none"));
 }
 console.log(bad ? bad + " failing" : "all passing");
+
+process.exit(bad ? 1 : 0);

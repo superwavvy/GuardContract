@@ -108,8 +108,8 @@ These contracts were used to tune rules, so any precision figure here is in-samp
 
 1. Clone the repository.
    ```bash
-   git clone git@github.com:superwavvy/Guard-Contract.git
-   cd Guard-Contract
+   git clone git@github.com:superwavvy/GuardContract.git
+   cd GuardContract
    ```
 2. Install dependencies.
    ```bash
