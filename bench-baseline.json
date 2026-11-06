@@ -1,0 +1,51 @@
+{
+  "tolerance": 3,
+  "mode": "patterns",
+  "entries": 143,
+  "total": {
+    "hit": 165,
+    "n": 207
+  },
+  "categories": {
+    "access_control": {
+      "hit": 17,
+      "n": 21
+    },
+    "arithmetic": {
+      "hit": 22,
+      "n": 23
+    },
+    "bad_randomness": {
+      "hit": 15,
+      "n": 31
+    },
+    "denial_of_service": {
+      "hit": 5,
+      "n": 7
+    },
+    "front_running": {
+      "hit": 0,
+      "n": 7
+    },
+    "other": {
+      "hit": 1,
+      "n": 3
+    },
+    "reentrancy": {
+      "hit": 30,
+      "n": 32
+    },
+    "short_addresses": {
+      "hit": 1,
+      "n": 1
+    },
+    "time_manipulation": {
+      "hit": 2,
+      "n": 7
+    },
+    "unchecked_low_level_calls": {
+      "hit": 72,
+      "n": 75
+    }
+  }
+}

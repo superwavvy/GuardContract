@@ -1,0 +1,13 @@
+name: benchmark
+on: [push, pull_request]
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm install --no-audit --no-fund
+      - run: git clone --depth 1 https://github.com/smartbugs/smartbugs-curated /tmp/sb
+      - run: node bench-gate.js /tmp/sb
